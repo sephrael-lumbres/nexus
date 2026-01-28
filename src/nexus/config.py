@@ -5,6 +5,7 @@ from functools import lru_cache
 
 from pydantic_settings import BaseSettings
 
+
 class Environment(str, Enum):
     """Application environment."""
     DEVELOPMENT = "development"
@@ -65,17 +66,17 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         """Checks if running in production mode."""
         return self.environment == Environment.PRODUCTION
-    
+
     @property
     def is_testing(self) -> bool:
         """Checks if running in test mode."""
         return self.environment == Environment.TESTING
-    
+
     @property
     def sync_database_url(self) -> str:
         """Gets synchronous database URL (for Alembic)."""
         return self.database_url.replace("+asyncpg", "")
-    
+
 @lru_cache
 def get_settings() -> Settings:
     """
