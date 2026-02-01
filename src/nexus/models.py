@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 from sqlalchemy import (
     CheckConstraint,
     Column,
@@ -225,7 +225,7 @@ class JobCreate(BaseModel):
 
     @field_validator("input_data")
     @classmethod
-    def validate_input_data(cls, v: dict[str, Any], info) -> dict[str, Any]:
+    def validate_input_data(cls, v: dict[str, Any], info: ValidationInfo) -> dict[str, Any]:
         """Validate that input_data matches the expected schema for job_type."""
         job_type = info.data.get("job_type")
 
@@ -259,9 +259,10 @@ class JobResponse(BaseModel):
     completed_at: datetime | None = None
     worker_id: str | None = None
 
-    class Config:
-        """Pydantic configuration."""
-        from_attributes = True  # Allow creating from SQLAlchemy models
+     # Pydantic V2 configuration using model_config
+    model_config = {
+        "from_attributes": True, # Allow creating from SQLAlchemy models
+    }
 
 
 class JobSubmitResponse(BaseModel):

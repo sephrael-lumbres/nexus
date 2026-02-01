@@ -55,40 +55,36 @@ class Settings(BaseSettings):
     # Dead letter queue
     dlq_enabled: bool = True
 
-    class Config:
-        """Pydantic configuration."""
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        # Ignores environment variables not defined in Settings
-        extra = "ignore"
+    # Pydantic v2 configuration using model_config
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "extra": "ignore", # Ignore environment variables not defined in Settings
+    }
 
     @property
     def is_production(self) -> bool:
-        """Checks if running in production mode."""
+        """Check if running in production mode."""
         return self.environment == Environment.PRODUCTION
 
     @property
     def is_testing(self) -> bool:
-        """Checks if running in test mode."""
+        """Check if running in test mode."""
         return self.environment == Environment.TESTING
 
-    @property
-    def sync_database_url(self) -> str:
-        """Gets synchronous database URL (for Alembic)."""
-        return self.database_url.replace("+asyncpg", "")
 
 @lru_cache
 def get_settings() -> Settings:
     """
-    Gets cached settings instance.
+    Get cached settings instance.
     Uses lru_cache to ensure settings are only loaded once.
     """
     return Settings()
 
 if __name__ == "__main__":
     settings = get_settings()
-    print(f"Environment: {settings.environment}")
+    print(f"Environment: {settings.environment.value}")
     print(f"Database URL: {settings.database_url}")
     print(f"Redis URL: {settings.redis_url}")
-    print(f"LLM Provider: {settings.llm_provider}")
+    print(f"LLM Provider: {settings.llm_provider.value}")
     print(f"Worker Count: {settings.worker_count}")
