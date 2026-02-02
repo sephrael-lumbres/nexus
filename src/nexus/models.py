@@ -9,14 +9,13 @@ from pydantic import BaseModel, Field, ValidationInfo, field_validator
 from sqlalchemy import (
     CheckConstraint,
     Column,
-    DateTime,
     Float,
     Index,
     Integer,
     String,
     Text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import DeclarativeBase
 
@@ -91,21 +90,22 @@ class JobRecord(Base):
     cost_usd = Column(Float, default=0.0)
     duration_ms = Column(Integer, nullable=True)
 
-    # Timestamps
+    # Timestamps - Use TIMESTAMP WITH TIME ZONE for timezone-aware datetimes
     created_at = Column(
-        DateTime,
+        TIMESTAMP(timezone=True),
         nullable=False,
-        default=datetime.now(UTC),
+        # lambda makes this a callable so that this gets evaluated for every new job created
+        default=lambda: datetime.now(UTC),
         index=True,
     )
-    started_at = Column(DateTime, nullable=True)
-    completed_at = Column(DateTime, nullable=True)
+    started_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    completed_at = Column(TIMESTAMP(timezone=True), nullable=True)
 
     # Worker tracking
     worker_id = Column(String(50), nullable=True)
 
     # Dead letter queue metadata
-    moved_to_dlq_at = Column(DateTime, nullable=True)
+    moved_to_dlq_at = Column(TIMESTAMP(timezone=True), nullable=True)
     dlq_reason = Column(Text, nullable=True)
 
     # Table-level constraints and indexes
