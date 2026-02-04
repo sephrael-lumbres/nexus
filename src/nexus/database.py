@@ -240,7 +240,7 @@ class JobRepository:
             .group_by(JobRecord.status)
         )
         result = await self.session.execute(query)
-        return dict(result.all())
+        return dict(result.all())  # type: ignore[arg-type]
 
     async def count_by_type(self) -> dict[str, int]:
         """
@@ -254,7 +254,7 @@ class JobRepository:
             .group_by(JobRecord.job_type)
         )
         result = await self.session.execute(query)
-        return dict(result.all())
+        return dict(result.all())  # type: ignore[arg-type]
 
     # =========================================================================
     # Statistics (Resume Metrics!)
@@ -339,10 +339,10 @@ class JobRepository:
 
         if job:
             # Update to running state
-            job.status = JobStatus.RUNNING.value
-            job.worker_id = worker_id
-            job.started_at = datetime.now(UTC)
-            job.attempt += 1
+            job.status = JobStatus.RUNNING.value  # type: ignore[assignment]
+            job.worker_id = worker_id             # type: ignore[assignment]
+            job.started_at = datetime.now(UTC)    # type: ignore[assignment]
+            job.attempt += 1                      # type: ignore[assignment]
             await self.session.flush()
 
         return job
@@ -387,9 +387,9 @@ class JobRepository:
         Returns:
             Updated JobRecord
         """
-        job.status = JobStatus.DEAD.value
-        job.moved_to_dlq_at = datetime.now(UTC)
-        job.dlq_reason = reason
+        job.status = JobStatus.DEAD.value        # type: ignore[assignment]
+        job.moved_to_dlq_at = datetime.now(UTC)  # type: ignore[assignment]
+        job.dlq_reason = reason                  # type: ignore[assignment]
         await self.session.flush()
         return job
 
@@ -425,11 +425,11 @@ class JobRepository:
         Returns:
             Updated JobRecord
         """
-        job.status = JobStatus.PENDING.value
-        job.attempt = 0
-        job.error = None
-        job.moved_to_dlq_at = None
-        job.dlq_reason = None
+        job.status = JobStatus.PENDING.value  # type: ignore[assignment]
+        job.attempt = 0                       # type: ignore[assignment]
+        job.error = None                      # type: ignore[assignment]
+        job.moved_to_dlq_at = None            # type: ignore[assignment]
+        job.dlq_reason = None                 # type: ignore[assignment]
         await self.session.flush()
         return job
 
@@ -490,8 +490,9 @@ async def _test_database() -> None:
         print(f"\n\nCreated job: {job.id}")
 
         # Read it back
-        fetched = await repo.get(job.id)
-        print(f"Fetched job: {fetched.id}, status: {fetched.status}\n\n")
+        fetched = await repo.get(job.id)  # type: ignore[arg-type]
+        if fetched:
+            print(f"Fetched job: {fetched.id}, status: {fetched.status}\n\n")
 
         # List jobs
         jobs = await repo.list_jobs(limit=5)
