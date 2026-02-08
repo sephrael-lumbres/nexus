@@ -16,7 +16,7 @@ Architecture:
 
 import json
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import redis.asyncio as redis
@@ -83,7 +83,7 @@ class JobQueue:
                 decode_responses=True,
             )
             # Verify connection
-            await self.redis.ping()
+            await self.redis.ping()  # type: ignore[misc]
             logger.info("Connected to Redis", url=self._safe_url())
 
     async def disconnect(self) -> None:
@@ -104,7 +104,8 @@ class JobQueue:
         """
         try:
             await self.connect()
-            await self.redis.ping()
+            assert self.redis is not None
+            await self.redis.ping()  # type: ignore[misc]
             return True
         except Exception as e:
             logger.error("Redis health check failed", error=str(e))
@@ -139,14 +140,15 @@ class JobQueue:
             int: New length of the pending queue
         """
         await self._ensure_connected()
+        assert self.redis is not None
 
         job_id_str = str(job_id)
 
         # Add to pending queue (FIFO: add to tail)
-        queue_length = await self.redis.rpush(self.pending_key, job_id_str)
+        queue_length = cast(int, await self.redis.rpush(self.pending_key, job_id_str))  # type: ignore[misc]
 
         # Update statistics
-        await self.redis.hincrby(self.stats_key, "total_enqueued", 1)
+        await self.redis.hincrby(self.stats_key, "total_enqueued", 1)  # type: ignore[misc]
 
         logger.debug("Job enqueued", job_id=job_id_str, queue_length=queue_length)
 
@@ -165,9 +167,10 @@ class JobQueue:
             UUID of the job if available, None if timeout reached
         """
         await self._ensure_connected()
+        assert self.redis is not None
 
         # Blocking pop from head of queue (FIFO)
-        result = await self.redis.blpop(self.pending_key, timeout=timeout)
+        result = await self.redis.blpop([self.pending_key], timeout=timeout)  # type: ignore[misc]
 
         if result is None:
             return None
@@ -177,10 +180,10 @@ class JobQueue:
         job_id = UUID(job_id_str)
 
         # Track in processing set
-        await self.redis.sadd(self.processing_key, job_id_str)
+        await self.redis.sadd(self.processing_key, job_id_str)  # type: ignore[misc]
 
         # Update statistics
-        await self.redis.hincrby(self.stats_key, "total_dequeued", 1)
+        await self.redis.hincrby(self.stats_key, "total_dequeued", 1)  # type: ignore[misc]
 
         logger.debug("Job dequeued", job_id=job_id_str)
 
@@ -195,9 +198,10 @@ class JobQueue:
             UUID of the job if available, None if queue is empty
         """
         await self._ensure_connected()
+        assert self.redis is not None
 
         # Non-blocking pop
-        job_id_str = await self.redis.lpop(self.pending_key)
+        job_id_str = await self.redis.lpop(self.pending_key)  # type: ignore[misc]
 
         if job_id_str is None:
             return None
@@ -205,10 +209,10 @@ class JobQueue:
         job_id = UUID(job_id_str)
 
         # Track in processing set
-        await self.redis.sadd(self.processing_key, job_id_str)
+        await self.redis.sadd(self.processing_key, job_id_str)  # type: ignore[misc]
 
         # Update statistics
-        await self.redis.hincrby(self.stats_key, "total_dequeued", 1)
+        await self.redis.hincrby(self.stats_key, "total_dequeued", 1)  # type: ignore[misc]
 
         logger.debug("Job dequeued (non-blocking)", job_id=job_id_str)
 
@@ -226,15 +230,16 @@ class JobQueue:
             bool: True if job was in processing set, False otherwise
         """
         await self._ensure_connected()
+        assert self.redis is not None
 
         job_id_str = str(job_id)
 
         # Remove from processing set
-        removed = await self.redis.srem(self.processing_key, job_id_str)
+        removed = await self.redis.srem(self.processing_key, job_id_str)  # type: ignore[misc]
 
         if removed:
             # Update statistics
-            await self.redis.hincrby(self.stats_key, "total_completed", 1)
+            await self.redis.hincrby(self.stats_key, "total_completed", 1)  # type: ignore[misc]
             logger.debug("Job completed", job_id=job_id_str)
         else:
             logger.warning("Job not in processing set", job_id=job_id_str)
@@ -254,15 +259,16 @@ class JobQueue:
             bool: True if job was in processing set, False otherwise
         """
         await self._ensure_connected()
+        assert self.redis is not None
 
         job_id_str = str(job_id)
 
         # Remove from processing set
-        removed = await self.redis.srem(self.processing_key, job_id_str)
+        removed = await self.redis.srem(self.processing_key, job_id_str)  # type: ignore[misc]
 
         if removed:
             # Update statistics
-            await self.redis.hincrby(self.stats_key, "total_failed", 1)
+            await self.redis.hincrby(self.stats_key, "total_failed", 1)  # type: ignore[misc]
             logger.debug("Job failed", job_id=job_id_str)
         else:
             logger.warning("Job not in processing set", job_id=job_id_str)
@@ -280,22 +286,23 @@ class JobQueue:
             int: New length of the pending queue
         """
         await self._ensure_connected()
+        assert self.redis is not None
 
         job_id_str = str(job_id)
 
         # Remove from processing set
-        await self.redis.srem(self.processing_key, job_id_str)
+        await self.redis.srem(self.processing_key, job_id_str)  # type: ignore[misc]
 
         # Add back to queue
         if to_front:
             # Add to front for faster retry
-            queue_length = await self.redis.lpush(self.pending_key, job_id_str)
+            queue_length = cast(int, await self.redis.lpush(self.pending_key, job_id_str))  # type: ignore[misc]
         else:
             # Add to back (normal FIFO)
-            queue_length = await self.redis.rpush(self.pending_key, job_id_str)
+            queue_length = cast(int, await self.redis.rpush(self.pending_key, job_id_str))  # type: ignore[misc]
 
         # Update statistics
-        await self.redis.hincrby(self.stats_key, "total_requeued", 1)
+        await self.redis.hincrby(self.stats_key, "total_requeued", 1)  # type: ignore[misc]
 
         logger.debug(
             "Job requeued",
@@ -329,11 +336,12 @@ class JobQueue:
             int: New length of the DLQ
         """
         await self._ensure_connected()
+        assert self.redis is not None
 
         job_id_str = str(job_id)
 
         # Remove from processing set
-        await self.redis.srem(self.processing_key, job_id_str)
+        await self.redis.srem(self.processing_key, job_id_str)  # type: ignore[misc]
 
         # Create DLQ entry with metadata
         dlq_entry = {
@@ -344,10 +352,10 @@ class JobQueue:
         }
 
         # Add to DLQ
-        dlq_length = await self.redis.rpush(self.dlq_key, json.dumps(dlq_entry))
+        dlq_length = cast(int, await self.redis.rpush(self.dlq_key, json.dumps(dlq_entry)))  # type: ignore[misc]
 
         # Update statistics
-        await self.redis.hincrby(self.stats_key, "total_dlq", 1)
+        await self.redis.hincrby(self.stats_key, "total_dlq", 1)  # type: ignore[misc]
 
         logger.warning(
             "Job moved to DLQ",
@@ -373,9 +381,10 @@ class JobQueue:
             List of DLQ entries with metadata
         """
         await self._ensure_connected()
+        assert self.redis is not None
 
         # Get entries from DLQ
-        entries = await self.redis.lrange(self.dlq_key, start, end)
+        entries = await self.redis.lrange(self.dlq_key, start, end)  # type: ignore[misc]
 
         # Parse JSON entries
         return [json.loads(entry) for entry in entries]
@@ -392,25 +401,26 @@ class JobQueue:
             bool: True if job was found and replayed, False otherwise
         """
         await self._ensure_connected()
+        assert self.redis is not None
 
         job_id_str = str(job_id)
 
         # Get all DLQ entries
-        entries = await self.redis.lrange(self.dlq_key, 0, -1)
+        entries = await self.redis.lrange(self.dlq_key, 0, -1)  # type: ignore[misc]
 
         # Find and remove the matching entry
         for entry_json in entries:
             entry = json.loads(entry_json)
             if entry.get("job_id") == job_id_str:
                 # Remove from DLQ (removes first occurrence)
-                removed = await self.redis.lrem(self.dlq_key, 1, entry_json)
+                removed = await self.redis.lrem(self.dlq_key, 1, entry_json)  # type: ignore[misc]
 
                 if removed:
                     # Add back to pending queue
-                    await self.redis.rpush(self.pending_key, job_id_str)
+                    await self.redis.rpush(self.pending_key, job_id_str)  # type: ignore[misc]
 
                     # Update statistics
-                    await self.redis.hincrby(self.stats_key, "total_replayed", 1)
+                    await self.redis.hincrby(self.stats_key, "total_replayed", 1)  # type: ignore[misc]
 
                     logger.info("Job replayed from DLQ", job_id=job_id_str)
                     return True
@@ -427,9 +437,10 @@ class JobQueue:
             int: Number of entries removed
         """
         await self._ensure_connected()
+        assert self.redis is not None
 
         # Get count before clearing
-        count = await self.redis.llen(self.dlq_key)
+        count = cast(int, await self.redis.llen(self.dlq_key))  # type: ignore[misc]
 
         # Delete the DLQ
         await self.redis.delete(self.dlq_key)
@@ -449,7 +460,8 @@ class JobQueue:
             int: Number of pending jobs
         """
         await self._ensure_connected()
-        return await self.redis.llen(self.pending_key)
+        assert self.redis is not None
+        return cast(int, await self.redis.llen(self.pending_key))  # type: ignore[misc]
 
     async def processing_count(self) -> int:
         """Get the number of jobs currently being processed.
@@ -458,7 +470,8 @@ class JobQueue:
             int: Number of in-flight jobs
         """
         await self._ensure_connected()
-        return await self.redis.scard(self.processing_key)
+        assert self.redis is not None
+        return cast(int, await self.redis.scard(self.processing_key))  # type: ignore[misc]
 
     async def dlq_count(self) -> int:
         """Get the number of jobs in the dead letter queue.
@@ -467,7 +480,8 @@ class JobQueue:
             int: Number of DLQ entries
         """
         await self._ensure_connected()
-        return await self.redis.llen(self.dlq_key)
+        assert self.redis is not None
+        return cast(int, await self.redis.llen(self.dlq_key))  # type: ignore[misc]
 
     async def get_processing_jobs(self) -> list[UUID]:
         """Get all jobs currently being processed.
@@ -478,8 +492,9 @@ class JobQueue:
             List of job UUIDs currently in processing
         """
         await self._ensure_connected()
+        assert self.redis is not None
 
-        job_ids = await self.redis.smembers(self.processing_key)
+        job_ids = await self.redis.smembers(self.processing_key)  # type: ignore[misc]
         return [UUID(job_id) for job_id in job_ids]
 
     async def is_processing(self, job_id: UUID) -> bool:
@@ -492,7 +507,8 @@ class JobQueue:
             bool: True if job is in processing set
         """
         await self._ensure_connected()
-        return await self.redis.sismember(self.processing_key, str(job_id))
+        assert self.redis is not None
+        return bool(await self.redis.sismember(self.processing_key, str(job_id)))  # type: ignore[misc]
 
     async def peek(self, count: int = 10) -> list[UUID]:
         """Peek at the next jobs in the queue without removing them.
@@ -504,8 +520,9 @@ class JobQueue:
             List of job UUIDs at the front of the queue
         """
         await self._ensure_connected()
+        assert self.redis is not None
 
-        job_ids = await self.redis.lrange(self.pending_key, 0, count - 1)
+        job_ids = await self.redis.lrange(self.pending_key, 0, count - 1)  # type: ignore[misc]
         return [UUID(job_id) for job_id in job_ids]
 
 
@@ -521,9 +538,10 @@ class JobQueue:
             Dict with queue statistics
         """
         await self._ensure_connected()
+        assert self.redis is not None
 
         # Get counters from hash
-        stats = await self.redis.hgetall(self.stats_key)
+        stats = await self.redis.hgetall(self.stats_key)  # type: ignore[misc]
 
         # Get current queue depths
         pending = await self.pending_count()
@@ -549,6 +567,7 @@ class JobQueue:
         Use with caution - typically only for testing.
         """
         await self._ensure_connected()
+        assert self.redis is not None
         await self.redis.delete(self.stats_key)
         logger.info("Queue statistics reset")
 
@@ -566,6 +585,7 @@ class JobQueue:
             Dict with counts of items removed from each queue
         """
         await self._ensure_connected()
+        assert self.redis is not None
 
         # Get counts before clearing
         pending = await self.pending_count()
@@ -606,23 +626,24 @@ class JobQueue:
             int: Number of jobs recovered
         """
         await self._ensure_connected()
+        assert self.redis is not None
 
         recovered = 0
         for job_id in job_ids:
             job_id_str = str(job_id)
 
             # Check if in processing set
-            is_processing = await self.redis.sismember(
+            is_processing = await self.redis.sismember(  # type: ignore[misc]
                 self.processing_key,
                 job_id_str,
             )
 
             if is_processing:
                 # Remove from processing
-                await self.redis.srem(self.processing_key, job_id_str)
+                await self.redis.srem(self.processing_key, job_id_str)  # type: ignore[misc]
 
                 # Add back to pending (front of queue)
-                await self.redis.lpush(self.pending_key, job_id_str)
+                await self.redis.lpush(self.pending_key, job_id_str)  # type: ignore[misc]
 
                 recovered += 1
                 logger.info("Recovered stuck job", job_id=job_id_str)
@@ -704,13 +725,15 @@ async def _test_queue() -> None:
         print(f"[TEST] Processing count: {processing}")
 
         # Complete the job
-        await queue.complete(dequeued)
-        print("[TEST] Completed job")
+        if dequeued:
+            await queue.complete(dequeued)
+            print("[TEST] Completed job")
 
         # Dequeue and fail a job
         dequeued = await queue.dequeue_nonblocking()
-        await queue.move_to_dlq(dequeued, error={"msg": "Test error"}, reason="Testing DLQ")
-        print("[TEST] Moved job to DLQ")
+        if dequeued:
+            await queue.move_to_dlq(dequeued, error={"msg": "Test error"}, reason="Testing DLQ")
+            print("[TEST] Moved job to DLQ")
 
         # Check DLQ
         dlq_entries = await queue.get_dlq_entries()
