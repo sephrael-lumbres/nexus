@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from nexus.config import Settings, get_settings
 from nexus.database import Database, JobRepository, reset_database
 from nexus.models import JobRecord, JobStatus, JobType
+from nexus.queue import JobQueue, reset_queue
 
 
 # =============================================================================
@@ -95,6 +96,26 @@ async def session(db: Database) -> AsyncGenerator[AsyncSession, None]:
 async def repo(session: AsyncSession) -> JobRepository:
     """Get a JobRepository instance for testing."""
     return JobRepository(session)
+
+
+# =============================================================================
+# Queue Fixtures
+# =============================================================================
+@pytest_asyncio.fixture
+async def queue() -> AsyncGenerator[JobQueue, None]:
+    """
+    Get a clean job queue for testing.
+
+    Clears the queue before and after each test.
+    """
+    reset_queue()
+    q = JobQueue()
+    await q.connect()
+    await q.clear_all()
+    yield q
+    await q.clear_all()
+    await q.disconnect()
+    reset_queue()
 
 
 # =============================================================================
