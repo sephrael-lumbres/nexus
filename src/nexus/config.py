@@ -12,16 +12,18 @@ class Environment(str, Enum):
     PRODUCTION = "production"
     TESTING = "testing"
 
+
 class LLMProvider(str, Enum):
     """Supported LLM providers."""
     MOCK = "mock"
     OPENAI = "openai"
 
+
 class Settings(BaseSettings):
     """
     Application settings loaded from environment variables.
 
-    All settings can be overriden by setting the corresponding
+    All settings can be overridden by setting the corresponding
     environment variable (case-insensitive).
     """
 
@@ -80,6 +82,35 @@ def get_settings() -> Settings:
     Uses lru_cache to ensure settings are only loaded once.
     """
     return Settings()
+
+def disable_logging() -> None:
+    """Disable all structlog logging for clean module output.
+
+    Call this in __main__ blocks when the --quiet flag is passed.
+    Routes all log output to /dev/null instead of the terminal,
+    leaving only explicit print() statements visible.
+
+    Example:
+        if __name__ == "__main__":
+            import asyncio
+            import sys
+            from nexus.config import disable_logging
+
+            if "--quiet" in sys.argv:
+                disable_logging()
+
+            asyncio.run(_test_my_module())
+    """
+    import os
+
+    import structlog
+
+    structlog.configure(
+        processors=[structlog.dev.ConsoleRenderer()],
+        wrapper_class=structlog.stdlib.BoundLogger,
+        logger_factory=structlog.PrintLoggerFactory(open(os.devnull, "w")),
+        cache_logger_on_first_use=True,
+    )
 
 if __name__ == "__main__":
     settings = get_settings()

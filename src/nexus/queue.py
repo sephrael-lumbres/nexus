@@ -754,4 +754,11 @@ async def _test_queue() -> None:
 
 if __name__ == "__main__":
     import asyncio
+    import sys
+
+    from nexus.config import disable_logging
+
+    if "--quiet" in sys.argv:
+        disable_logging()
+
     asyncio.run(_test_queue())

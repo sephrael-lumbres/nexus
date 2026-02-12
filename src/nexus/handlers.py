@@ -463,9 +463,9 @@ async def _test_handlers() -> None:
     # Use mock provider for testing
     provider = MockLLMProvider()
 
-    print("DEBUG: " + "=" * 60)
-    print("DEBUG: Testing Completion Handler")
-    print("DEBUG: " + "=" * 60)
+    print("=" * 60)
+    print("Testing Completion Handler")
+    print("=" * 60)
 
     # Create a mock job record
     completion_job = JobRecord(
@@ -482,15 +482,15 @@ async def _test_handlers() -> None:
     handler = get_handler(JobType.LLM_COMPLETION, provider=provider)
     result = await handler.execute(completion_job)
 
-    print(f"DEBUG: Success: {result.success}")
-    print(f"DEBUG: Content: {result.result['content'][:100]}...")
-    print(f"DEBUG: Total tokens: {result.total_tokens}")
-    print(f"DEBUG: Cost: ${result.cost_usd:.6f}")
-    print(f"DEBUG: Duration: {result.duration_ms}ms")
+    print(f"Success: {result.success}")
+    print(f"Content: {result.result['content'][:100]}...")
+    print(f"Total tokens: {result.total_tokens}")
+    print(f"Cost: ${result.cost_usd:.6f}")
+    print(f"Duration: {result.duration_ms}ms")
 
-    print("\nDEBUG: " + "=" * 60)
-    print("DEBUG: Testing Batch Handler")
-    print("DEBUG: " + "=" * 60)
+    print("\n" + "=" * 60)
+    print("Testing Batch Handler")
+    print("=" * 60)
 
     batch_job = JobRecord(
         id=uuid4(),
@@ -512,28 +512,35 @@ async def _test_handlers() -> None:
     handler = get_handler(JobType.LLM_BATCH, provider=provider)
     result = await handler.execute(batch_job)
 
-    print(f"DEBUG: Success: {result.success}")
-    print(f"DEBUG: Total items: {result.result['total_items']}")
-    print(f"DEBUG: Successful: {result.result['successful_count']}")
-    print(f"DEBUG: Failed: {result.result['failed_count']}")
-    print(f"DEBUG: Total tokens: {result.total_tokens}")
-    print(f"DEBUG: Cost: ${result.cost_usd:.6f}")
-    print(f"DEBUG: Duration: {result.duration_ms}ms")
+    print(f"Success: {result.success}")
+    print(f"Total items: {result.result['total_items']}")
+    print(f"Successful: {result.result['successful_count']}")
+    print(f"Failed: {result.result['failed_count']}")
+    print(f"Total tokens: {result.total_tokens}")
+    print(f"Cost: ${result.cost_usd:.6f}")
+    print(f"Duration: {result.duration_ms}ms")
 
     # Show individual results
-    print("\nDEBUG: Item results:")
+    print("\nItem results:")
     for item in result.result["successful"][:3]:
-        print(f"DEBUG:   {item['id']}: {item['content'][:50]}...")
+        print(f"  {item['id']}: {item['content'][:50]}...")
 
-    print("\nDEBUG: " + "=" * 60)
-    print("DEBUG: Testing Handler Registry")
-    print("DEBUG: " + "=" * 60)
+    print("\n" + "=" * 60)
+    print("Testing Handler Registry")
+    print("=" * 60)
 
-    print(f"DEBUG: Registered handlers: {list_handlers()}")
+    print(f"Registered handlers: {list_handlers()}")
 
-    print("\nDEBUG: Handler tests complete!")
+    print("\nHandler tests complete!")
 
 
 if __name__ == "__main__":
     import asyncio
+    import sys
+
+    from nexus.config import disable_logging
+
+    if "--quiet" in sys.argv:
+        disable_logging()
+
     asyncio.run(_test_handlers())

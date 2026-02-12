@@ -475,7 +475,7 @@ async def _test_database() -> None:
 
     # Test health check
     healthy = await db.health_check()
-    print(f"\n\nDatabase healthy: {healthy}\n\n")
+    print(f"Database healthy: {healthy}")
 
     # Test creating and reading a job
     async with db.session() as session:
@@ -487,26 +487,35 @@ async def _test_database() -> None:
             input_data={"prompt": "Test prompt", "model": "gpt-4o-mini"},
         )
         job = await repo.create(job)
-        print(f"\n\nCreated job: {job.id}")
+        print(f"Created job: {job.id}")
 
         # Read it back
         fetched = await repo.get(job.id)  # type: ignore[arg-type]
         if fetched:
-            print(f"Fetched job: {fetched.id}, status: {fetched.status}\n\n")
+            print(f"Fetched job: {fetched.id}, status: {fetched.status}")
 
         # List jobs
         jobs = await repo.list_jobs(limit=5)
-        print(f"\n\nTotal jobs in list: {len(jobs)}\n\n")
+        print(f"Total jobs in list: {len(jobs)}")
 
         # Get stats
         stats = await repo.get_stats()
-        print(f"\n\nStats: {stats}\n\n")
+        print(f"Stats: {stats}")
 
         # Clean up test job
         await repo.delete(job)
-        print("\n\nDeleted test job\n\n")
+        print("Deleted test job")
 
 
 if __name__ == "__main__":
     import asyncio
+    import sys
+
+    from nexus.config import disable_logging
+
+    if "--quiet" in sys.argv:
+        import logging
+        logging.disable(logging.CRITICAL)  # Silences SQLAlchemy
+        disable_logging()                  # Silences structlog
+
     asyncio.run(_test_database())

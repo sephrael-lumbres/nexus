@@ -294,8 +294,12 @@ class HealthResponse(BaseModel):
     version: str = "0.1.0"
 
 
-# Quick test when running directly
-if __name__ == "__main__":
+# =============================================================================
+# Quick Test
+# =============================================================================
+async def _test_models() -> None:
+    """Quick test of model functionality."""
+
     # Test CompletionInput validation
     completion = CompletionInput(prompt="Hello, world!")
     print(f"CompletionInput: {completion}")
@@ -315,3 +319,8 @@ if __name__ == "__main__":
         input_data={"prompt": "Test prompt"},
     )
     print(f"JobCreate: {job}")
+
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(_test_models())
