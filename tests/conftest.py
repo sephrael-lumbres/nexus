@@ -17,7 +17,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from nexus.config import Settings, get_settings
 from nexus.database import Database, JobRepository, reset_database
+from nexus.handlers import BatchHandler, CompletionHandler
 from nexus.models import JobRecord, JobStatus, JobType
+from nexus.providers import MockLLMProvider
 from nexus.queue import JobQueue, reset_queue
 
 
@@ -116,6 +118,40 @@ async def queue() -> AsyncGenerator[JobQueue, None]:
     await q.clear_all()
     await q.disconnect()
     reset_queue()
+
+
+# =============================================================================
+# Provider Fixtures
+# =============================================================================
+@pytest.fixture
+def mock_provider() -> MockLLMProvider:
+    """Get a mock LLM provider for testing.
+
+    Uses minimal latency for fast tests.
+    """
+    return MockLLMProvider(min_latency_ms=1, max_latency_ms=5)
+
+@pytest.fixture
+def failing_provider() -> MockLLMProvider:
+    """Get a mock provider that always fails.
+
+    Useful for testing error handling.
+    """
+    return MockLLMProvider(failure_rate=1.0)
+
+
+# =============================================================================
+# Handler Fixtures
+# =============================================================================
+@pytest.fixture
+def completion_handler(mock_provider: MockLLMProvider) -> CompletionHandler:
+    """Get a completion handler with mock provider."""
+    return CompletionHandler(provider=mock_provider)
+
+@pytest.fixture
+def batch_handler(mock_provider: MockLLMProvider) -> BatchHandler:
+    """Get a batch handler with mock provider."""
+    return BatchHandler(provider=mock_provider)
 
 
 # =============================================================================
