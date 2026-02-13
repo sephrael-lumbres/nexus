@@ -341,7 +341,7 @@ class BatchHandler(BaseHandler):
             for i, result in enumerate(results):
                 item = input_data.items[i]
 
-                if isinstance(result, Exception):
+                if isinstance(result, BaseException):
                     failed.append({
                         "id": item.id,
                         "error": {
@@ -483,7 +483,8 @@ async def _test_handlers() -> None:
     result = await handler.execute(completion_job)
 
     print(f"Success: {result.success}")
-    print(f"Content: {result.result['content'][:100]}...")
+    if result.result:
+        print(f"Content: {result.result['content'][:100]}...")
     print(f"Total tokens: {result.total_tokens}")
     print(f"Cost: ${result.cost_usd:.6f}")
     print(f"Duration: {result.duration_ms}ms")
@@ -513,17 +514,19 @@ async def _test_handlers() -> None:
     result = await handler.execute(batch_job)
 
     print(f"Success: {result.success}")
-    print(f"Total items: {result.result['total_items']}")
-    print(f"Successful: {result.result['successful_count']}")
-    print(f"Failed: {result.result['failed_count']}")
+    if result.result:
+        print(f"Total items: {result.result['total_items']}")
+        print(f"Successful: {result.result['successful_count']}")
+        print(f"Failed: {result.result['failed_count']}")
     print(f"Total tokens: {result.total_tokens}")
     print(f"Cost: ${result.cost_usd:.6f}")
     print(f"Duration: {result.duration_ms}ms")
 
     # Show individual results
-    print("\nItem results:")
-    for item in result.result["successful"][:3]:
-        print(f"  {item['id']}: {item['content'][:50]}...")
+    if result.result:
+        print("\nItem results:")
+        for item in result.result["successful"][:3]:
+            print(f"  {item['id']}: {item['content'][:50]}...")
 
     print("\n" + "=" * 60)
     print("Testing Handler Registry")

@@ -475,7 +475,7 @@ class OpenAIProvider(BaseLLMProvider):
         }
 
         # Retry loop for transient errors
-        last_error = None
+        last_error: Exception | None = None
         for attempt in range(self.max_retries):
             try:
                 response = await self.client.post(
@@ -566,7 +566,7 @@ class OpenAIProvider(BaseLLMProvider):
 # =============================================================================
 def get_provider(
     provider_type: LLMProvider | None = None,
-    **kwargs,
+    **kwargs: Any,
 ) -> BaseLLMProvider:
     """Get an LLM provider instance based on configuration.
 
