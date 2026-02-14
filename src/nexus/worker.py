@@ -182,10 +182,10 @@ class Worker:
                 return
 
             # Update job to running state
-            job.status = JobStatus.RUNNING.value
-            job.worker_id = self.worker_id
-            job.started_at = datetime.now(UTC)
-            job.attempt += 1
+            job.status = JobStatus.RUNNING.value  # type: ignore[assignment]
+            job.worker_id = self.worker_id        # type: ignore[assignment]
+            job.started_at = datetime.now(UTC)    # type: ignore[assignment]
+            job.attempt += 1                      # type: ignore[assignment]
             await repo.update(job)
             # Session commits here and RUNNING job status is now visible
 
@@ -217,6 +217,9 @@ class Worker:
         async with self.db.session() as session:
             repo = JobRepository(session)
             job = await repo.get(job_id)
+            if job is None:
+                self.logger.warning("Job not found when recording result", job_id=str(job_id))
+                return
             await self._handle_result(repo, job, result)
             # Session commits here and COMPLETED/FAILED job status is now visible
             duration_ms = int((time.time() - start_time) * 1000)
@@ -240,19 +243,19 @@ class Worker:
             result: Handler result
         """
         # Update metrics
-        job.input_tokens = result.input_tokens
-        job.output_tokens = result.output_tokens
-        job.total_tokens = result.total_tokens
-        job.cost_usd = result.cost_usd
-        job.duration_ms = result.duration_ms
-        job.completed_at = datetime.now(UTC)
+        job.input_tokens = result.input_tokens    # type: ignore[assignment]
+        job.output_tokens = result.output_tokens  # type: ignore[assignment]
+        job.total_tokens = result.total_tokens    # type: ignore[assignment]
+        job.cost_usd = result.cost_usd            # type: ignore[assignment]
+        job.duration_ms = result.duration_ms      # type: ignore[assignment]
+        job.completed_at = datetime.now(UTC)      # type: ignore[assignment]
 
         if result.success:
             # Job completed successfully
-            job.status = JobStatus.COMPLETED.value
-            job.result = result.result
+            job.status = JobStatus.COMPLETED.value  # type: ignore[assignment]
+            job.result = result.result              # type: ignore[assignment]
 
-            await self.queue.complete(job.id)
+            await self.queue.complete(job.id)  # type: ignore[arg-type]
             self.jobs_processed += 1
 
             self.logger.info(
@@ -264,7 +267,7 @@ class Worker:
             )
         else:
             # Job failed
-            job.error = result.error
+            job.error = result.error  # type: ignore[assignment]
             await self._handle_failure(repo, job, result.error)
 
     async def _handle_failure(
@@ -282,10 +285,10 @@ class Worker:
         """
         if job.attempt < job.max_attempts:
             # Retry with exponential backoff
-            backoff = self._calculate_backoff(job.attempt)
+            backoff = self._calculate_backoff(job.attempt)  # type: ignore[arg-type]
 
-            job.status = JobStatus.PENDING.value
-            job.error = error
+            job.status = JobStatus.PENDING.value  # type: ignore[assignment]
+            job.error = error                     # type: ignore[assignment]
 
             self.logger.warning(
                 "Job failed, will retry",
@@ -300,21 +303,17 @@ class Worker:
             await asyncio.sleep(backoff)
 
             # Requeue for retry
-            await self.queue.requeue(job.id, to_front=True)
+            await self.queue.requeue(job.id, to_front=True)  # type: ignore[arg-type]
 
         else:
             # Max retries exceeded, move to DLQ
             reason = f"Max retries ({job.max_attempts}) exceeded"
 
-            job.status = JobStatus.DEAD.value
-            job.moved_to_dlq_at = datetime.now(UTC)
-            job.dlq_reason = reason
+            job.status = JobStatus.DEAD.value        # type: ignore[assignment]
+            job.moved_to_dlq_at = datetime.now(UTC)  # type: ignore[assignment]
+            job.dlq_reason = reason                  # type: ignore[assignment]
 
-            await self.queue.move_to_dlq(
-                job.id,
-                error=error,
-                reason=reason,
-            )
+            await self.queue.move_to_dlq(job.id, error=error, reason=reason)  # type: ignore[arg-type]
 
             self.jobs_failed += 1
 
@@ -341,8 +340,8 @@ class Worker:
             "message": f"Job exceeded timeout of {self.settings.job_timeout_seconds} seconds",
         }
 
-        job.error = error
-        job.completed_at = datetime.now(UTC)
+        job.error = error                     # type: ignore[assignment]
+        job.completed_at = datetime.now(UTC)  # type: ignore[assignment]
 
         self.logger.error(
             "Job timed out",
@@ -370,8 +369,8 @@ class Worker:
             "message": str(exception),
         }
 
-        job.error = error
-        job.completed_at = datetime.now(UTC)
+        job.error = error                     # type: ignore[assignment]
+        job.completed_at = datetime.now(UTC)  # type: ignore[assignment]
 
         self.logger.error(
             "Job execution error",
@@ -400,7 +399,7 @@ class Worker:
         # Add random jitter (0-1 seconds)
         jitter = random.random()
 
-        return capped_backoff + jitter
+        return float(capped_backoff + jitter)
 
 
 # =============================================================================
@@ -709,7 +708,7 @@ async def _test_worker() -> None:
         print(f"Created job: {job_id}")
 
         # Enqueue job
-        await queue.enqueue(job_id)
+        await queue.enqueue(job_id)  # type: ignore[arg-type]
         print("Enqueued job")
 
     # Create worker
@@ -722,7 +721,11 @@ async def _test_worker() -> None:
     # Check result
     async with db.session() as session:
         repo = JobRepository(session)
-        job = await repo.get(job_id)
+        job = await repo.get(job_id)  # type: ignore[arg-type,assignment]
+
+        if job is None:
+            print(f"ERROR: Job {job_id} not found!")
+            return
 
         print(f"Job status: {job.status}")
         print(f"Job result: {job.result}")
