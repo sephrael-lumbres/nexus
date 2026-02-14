@@ -21,6 +21,7 @@ from nexus.handlers import BatchHandler, CompletionHandler
 from nexus.models import JobRecord, JobStatus, JobType
 from nexus.providers import MockLLMProvider
 from nexus.queue import JobQueue, reset_queue
+from nexus.worker import Worker, WorkerPool
 
 
 # =============================================================================
@@ -152,6 +153,32 @@ def completion_handler(mock_provider: MockLLMProvider) -> CompletionHandler:
 def batch_handler(mock_provider: MockLLMProvider) -> BatchHandler:
     """Get a batch handler with mock provider."""
     return BatchHandler(provider=mock_provider)
+
+
+# =============================================================================
+# Worker Fixtures
+# =============================================================================
+@pytest_asyncio.fixture
+async def worker(db: Database, queue: JobQueue) -> AsyncGenerator[Worker, None]:
+    """Get a worker for testing.
+
+    Uses shared database and queue fixtures.
+    """
+    w = Worker(worker_id="test-worker", db=db, queue=queue)
+    yield w
+
+
+@pytest_asyncio.fixture
+async def worker_pool(db: Database, queue: JobQueue) -> AsyncGenerator[WorkerPool, None]:
+    """Get a worker pool for testing.
+
+    Automatically stops the pool after test.
+    """
+    pool = WorkerPool(num_workers=2, db=db, queue=queue)
+    yield pool
+
+    if pool._started:
+        await pool.stop()
 
 
 # =============================================================================
