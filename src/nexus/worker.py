@@ -163,6 +163,7 @@ class Worker:
         """
         start_time = time.time()
 
+        # Session 1: Claim the job
         async with self.db.session() as session:
             repo = JobRepository(session)
 
@@ -186,6 +187,7 @@ class Worker:
             job.started_at = datetime.now(UTC)
             job.attempt += 1
             await repo.update(job)
+            # Session commits here and RUNNING job status is now visible
 
             self.logger.info(
                 "Processing job",
@@ -195,27 +197,28 @@ class Worker:
                 max_attempts=job.max_attempts,
             )
 
-            try:
-                # Get handler and execute
-                handler = get_handler(JobType(job.job_type))
+        # Get and execute handler (outside any session)
+        try:
+            handler = get_handler(JobType(job.job_type))
 
-                # Execute with timeout
-                result = await asyncio.wait_for(
-                    handler.execute(job),
-                    timeout=self.settings.job_timeout_seconds,
-                )
+            # Execute with timeout
+            result = await asyncio.wait_for(
+                handler.execute(job),
+                timeout=self.settings.job_timeout_seconds,
+            )
+        except TimeoutError:
+            await self._handle_timeout(repo, job)
+            return
+        except Exception as e:
+            await self._handle_error(repo, job, e)
+            return
 
-                # Update job with result
-                await self._handle_result(repo, job, result)
-
-            except TimeoutError:
-                await self._handle_timeout(repo, job)
-            except Exception as e:
-                await self._handle_error(repo, job, e)
-
-            # Commit all changes
-            await session.commit()
-
+        # Session 2: Record the result
+        async with self.db.session() as session:
+            repo = JobRepository(session)
+            job = await repo.get(job_id)
+            await self._handle_result(repo, job, result)
+            # Session commits here and COMPLETED/FAILED job status is now visible
             duration_ms = int((time.time() - start_time) * 1000)
             self.logger.debug(
                 "Job processing complete",
