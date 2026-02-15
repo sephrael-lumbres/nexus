@@ -16,8 +16,9 @@ Usage:
     uvicorn.run("nexus.api:app", host="0.0.0.0", port=8000)
 """
 
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import structlog
@@ -54,7 +55,7 @@ limiter = Limiter(key_func=get_remote_address)
 # Application Lifespan
 # =============================================================================
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan handler.
 
     Handles startup and shutdown events:
@@ -104,7 +105,7 @@ app = FastAPI(
 
 # Add rate limiter
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
 
 # Add CORS middleware
 app.add_middleware(
@@ -125,6 +126,8 @@ class JobSubmitResponse(BaseModel):
     job_type: JobType
     status: JobStatus
     message: str = "Job submitted successfully"
+
+    model_config = {"from_attributes": True}
 
 
 class JobListResponse(BaseModel):
@@ -177,25 +180,7 @@ def get_q() -> JobQueue:
 
 def job_to_response(job: JobRecord) -> JobResponse:
     """Convert JobRecord to JobResponse."""
-    return JobResponse(
-        id=job.id,
-        job_type=JobType(job.job_type),
-        input_data=job.input_data,
-        status=JobStatus(job.status),
-        attempt=job.attempt,
-        max_attempts=job.max_attempts,
-        result=job.result,
-        error=job.error,
-        input_tokens=job.input_tokens,
-        output_tokens=job.output_tokens,
-        total_tokens=job.total_tokens,
-        cost_usd=job.cost_usd,
-        duration_ms=job.duration_ms,
-        created_at=job.created_at,
-        started_at=job.started_at,
-        completed_at=job.completed_at,
-        worker_id=job.worker_id,
-    )
+    return JobResponse.model_validate(job)
 
 
 # =============================================================================
@@ -256,10 +241,7 @@ async def root() -> dict[str, str]:
     summary="Submit a new job",
 )
 @limiter.limit(lambda: f"{get_settings().rate_limit_per_minute}/minute")
-async def submit_job(
-    request: Request,
-    job_create: JobCreate,
-) -> JobSubmitResponse:
+async def submit_job(request: Request, job_create: JobCreate) -> JobSubmitResponse:
     """Submit a new job to the queue.
 
     The job will be validated, stored in the database, and
@@ -286,7 +268,7 @@ async def submit_job(
         job = await repo.create(job)
 
         # Enqueue for processing
-        await queue.enqueue(job.id)
+        await queue.enqueue(cast(UUID, job.id))
 
         logger.info(
             "Job submitted",
@@ -294,11 +276,7 @@ async def submit_job(
             job_type=job.job_type,
         )
 
-        return JobSubmitResponse(
-            id=job.id,
-            job_type=JobType(job.job_type),
-            status=JobStatus(job.status),
-        )
+        return JobSubmitResponse.model_validate(job)
 
 
 @app.get(
@@ -434,7 +412,7 @@ async def cancel_job(job_id: UUID) -> None:
                 detail=f"Cannot cancel job in '{job.status}' status",
             )
 
-        job.status = JobStatus.CANCELLED.value
+        job.status = JobStatus.CANCELLED.value  # type: ignore[assignment]
         await repo.update(job)
 
         logger.info("Job cancelled", job_id=str(job_id))

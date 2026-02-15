@@ -259,7 +259,7 @@ class JobResponse(BaseModel):
     completed_at: datetime | None = None
     worker_id: str | None = None
 
-     # Pydantic V2 configuration using model_config
+    # Pydantic V2 configuration using model_config
     model_config = {
         "from_attributes": True, # Allow creating from SQLAlchemy models
     }
