@@ -12,9 +12,11 @@ from collections.abc import AsyncGenerator, Generator
 
 import pytest
 import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from nexus.api import app
 from nexus.config import Settings, get_settings
 from nexus.database import Database, JobRepository, reset_database
 from nexus.handlers import BatchHandler, CompletionHandler
@@ -179,6 +181,20 @@ async def worker_pool(db: Database, queue: JobQueue) -> AsyncGenerator[WorkerPoo
 
     if pool._started:
         await pool.stop()
+
+
+# =============================================================================
+# API Client Fixtures
+# =============================================================================
+@pytest_asyncio.fixture
+async def client(db: Database, queue: JobQueue) -> AsyncGenerator[AsyncClient, None]:
+    """Get async HTTP client for API testing.
+
+    Uses ASGI transport to test FastAPI app directly.
+    """
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
 
 
 # =============================================================================
