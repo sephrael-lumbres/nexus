@@ -1,7 +1,9 @@
-# Development infrastructure only (PostgreSQL + Redis)
-# The API and workers run locally for easier debugging
+# Development infrastructure with monitoring stack
 
 services:
+  # ==========================================================================
+  # Core Infrastructure
+  # ==========================================================================
   postgres:
     image: postgres:14-alpine
     container_name: nexus-postgres
@@ -30,5 +32,91 @@ services:
       timeout: 5s
       retries: 5
 
+  # ==========================================================================
+  # Monitoring Stack
+  # ==========================================================================
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    container_name: nexus-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.console.libraries=/etc/prometheus/console_libraries"
+      - "--web.console.templates=/etc/prometheus/consoles"
+      - "--web.enable-lifecycle"
+    depends_on:
+      - redis
+      - postgres
+
+  grafana:
+    image: grafana/grafana:10.1.0
+    container_name: nexus-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/dashboard.json:/var/lib/grafana/dashboards/nexus.json:ro
+    depends_on:
+      - prometheus
+
+  # ==========================================================================
+  # Application Services (for full stack deployment)
+  # ==========================================================================
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nexus-api
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://nexus:nexus@postgres:5432/nexus
+      - REDIS_URL=redis://redis:6379/0
+      - ENVIRONMENT=development
+      - LOG_LEVEL=INFO
+      - LLM_PROVIDER=mock
+    command: ["python", "-m", "nexus.api", "--host", "0.0.0.0", "--port", "8000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    profiles:
+      - full
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nexus-worker
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://nexus:nexus@postgres:5432/nexus
+      - REDIS_URL=redis://redis:6379/0
+      - ENVIRONMENT=development
+      - LOG_LEVEL=INFO
+      - LLM_PROVIDER=mock
+      - WORKER_COUNT=3
+    command: ["python", "-m", "nexus.worker", "3"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    profiles:
+      - full
+
 volumes:
   postgres_data:
+  prometheus_data:
+  grafana_data:
