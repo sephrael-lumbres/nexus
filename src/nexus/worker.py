@@ -38,6 +38,7 @@ import structlog
 from nexus.config import get_settings
 from nexus.database import Database, JobRepository, get_database
 from nexus.handlers import HandlerResult, get_handler
+from nexus.metrics import get_metrics
 from nexus.models import JobRecord, JobStatus, JobType
 from nexus.queue import JobQueue, get_queue
 
@@ -81,6 +82,7 @@ class Worker:
         self.settings = get_settings()
         self.db = db or get_database()
         self.queue = queue or get_queue()
+        self.metrics = get_metrics()
 
         # State
         self.running = False
@@ -181,6 +183,11 @@ class Worker:
                 await self.queue.complete(job_id)
                 return
 
+            # Calculate and record job wait time for metrics
+            if job.created_at:
+                wait_seconds = (datetime.now(UTC) - job.created_at).total_seconds()
+                self.metrics.record_job_wait_time(job.job_type, wait_seconds)
+
             # Update job to running state
             job.status = JobStatus.RUNNING.value  # type: ignore[assignment]
             job.worker_id = self.worker_id        # type: ignore[assignment]
@@ -188,6 +195,12 @@ class Worker:
             job.attempt += 1                      # type: ignore[assignment]
             await repo.update(job)
             # Session commits here and RUNNING job status is now visible
+
+            # Record that this worker has picked up a job
+            self.metrics.record_job_started(
+                job_type=job.job_type,
+                worker_id=self.worker_id,
+            )
 
             self.logger.info(
                 "Processing job",
@@ -258,6 +271,19 @@ class Worker:
             await self.queue.complete(job.id)  # type: ignore[arg-type]
             self.jobs_processed += 1
 
+            # Record job completed metrics upon completion
+            model = job.input_data.get("model", "unknown")
+            duration_seconds = result.duration_ms / 1000.0 if result.duration_ms else 0.0
+            self.metrics.record_job_completed(
+                job_type=job.job_type,
+                worker_id=self.worker_id,
+                duration_seconds=duration_seconds,
+                input_tokens=result.input_tokens or 0,
+                output_tokens=result.output_tokens or 0,
+                cost_usd=result.cost_usd or 0.0,
+                model=model,
+            )
+
             self.logger.info(
                 "Job completed successfully",
                 job_id=str(job.id),
@@ -283,7 +309,18 @@ class Worker:
             job: Job record
             error: Error details
         """
-        if job.attempt < job.max_attempts:
+        will_retry = job.attempt < job.max_attempts
+        error_type = error.get("type", "Unknown") if error else "Unknown"
+
+        # Record failure metrics before branching on retry logic
+        self.metrics.record_job_failed(
+            job_type=job.job_type,
+            worker_id=self.worker_id,
+            error_type=error_type,
+            will_retry=will_retry,
+        )
+
+        if will_retry:
             # Retry with exponential backoff
             backoff = self._calculate_backoff(job.attempt)  # type: ignore[arg-type]
 
@@ -479,6 +516,9 @@ class WorkerPool:
             )
             self.tasks.append(task)
 
+        # Update active worker count metrics gauge on startup
+        get_metrics().update_worker_count(len(self.workers))
+
         logger.info(
             "Worker pool started",
             num_workers=len(self.workers),
@@ -509,6 +549,9 @@ class WorkerPool:
 
         # Disconnect from queue
         await self.queue.disconnect()
+
+        # Update worker count metrics gauge to 0 on shutdown
+        get_metrics().update_worker_count(0)
 
         # Set shutdown event
         self._shutdown_event.set()
