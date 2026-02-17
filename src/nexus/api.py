@@ -24,7 +24,7 @@ from uuid import UUID
 import structlog
 from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -32,6 +32,13 @@ from slowapi.util import get_remote_address
 
 from nexus.config import get_settings
 from nexus.database import Database, JobRepository, get_database
+from nexus.metrics import (
+    MetricsCollector,
+    MetricsMiddleware,
+    generate_metrics,
+    get_content_type,
+    get_metrics,
+)
 from nexus.models import (
     HealthResponse,
     JobCreate,
@@ -59,8 +66,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan handler.
 
     Handles startup and shutdown events:
-    - Startup: Connect to database and queue
-    - Shutdown: Clean up connections
+    - Startup: Connect to database and queue, start metrics collector
+    - Shutdown: Clean up connections, stop metrics collector
     """
     # Startup
     logger.info("Starting Nexus API")
@@ -78,6 +85,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     else:
         logger.error("Database connection failed")
 
+    # Start metrics collector
+    metrics_collector = MetricsCollector(queue)
+    await metrics_collector.start()
+
     logger.info(
         "Nexus API started",
         environment=settings.environment.value,
@@ -88,6 +99,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Shutdown
     logger.info("Shutting down Nexus API")
+    await metrics_collector.stop()
     await queue.disconnect()
     await db.close()
     logger.info("Nexus API shutdown complete")
@@ -115,6 +127,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Add metrics middleware
+app.add_middleware(MetricsMiddleware)
 
 
 # =============================================================================
@@ -231,6 +246,29 @@ async def root() -> dict[str, str]:
 
 
 # =============================================================================
+# Metrics Endpoint
+# =============================================================================
+@app.get(
+    "/metrics",
+    tags=["Monitoring"],
+    summary="Prometheus metrics",
+    response_class=Response,
+)
+async def prometheus_metrics() -> Response:
+    """Expose Prometheus metrics.
+
+    This endpoint is scraped by Prometheus to collect metrics.
+    Returns metrics in Prometheus exposition format.
+    """
+    from fastapi.responses import Response
+
+    return Response(
+        content=generate_metrics(),
+        media_type=get_content_type(),
+    )
+
+
+# =============================================================================
 # Job Endpoints
 # =============================================================================
 @app.post(
@@ -255,6 +293,7 @@ async def submit_job(request: Request, job_create: JobCreate) -> JobSubmitRespon
     """
     db = get_db()
     queue = get_q()
+    metrics = get_metrics()
 
     async with db.session() as session:
         repo = JobRepository(session)
@@ -269,6 +308,9 @@ async def submit_job(request: Request, job_create: JobCreate) -> JobSubmitRespon
 
         # Enqueue for processing
         await queue.enqueue(cast(UUID, job.id))
+
+        # Record metrics
+        metrics.record_job_submitted(job.job_type)
 
         logger.info(
             "Job submitted",
