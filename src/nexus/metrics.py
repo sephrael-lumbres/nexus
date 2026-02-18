@@ -25,6 +25,7 @@ Usage:
 """
 
 import asyncio
+import os
 import time
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -41,9 +42,27 @@ from prometheus_client import (
     Histogram,
     Info,
     generate_latest,
+    multiprocess,
+    values,
 )
 
+# Environment variable name for multiprocess metrics directory
+MULTIPROC_ENV_VAR: str = "PROMETHEUS_MULTIPROC_DIR"
+
 logger = structlog.get_logger()
+
+
+# =============================================================================
+# Multiprocess Mode Configuration
+# =============================================================================
+# Configure multiprocess mode if environment variable is set
+# This allows metrics to be aggregated across multiple worker processes
+if MULTIPROC_ENV_VAR in os.environ:
+    # Enable multiprocess value mode for all metric types
+    # This changes how counters, gauges, and histograms are stored
+    values.ValueClass = values.MultiProcessValue(
+        process_identifier=lambda: f"{os.getpid()}"
+    )
 
 
 # =============================================================================
@@ -387,15 +406,23 @@ def get_metrics() -> NexusMetrics:
     """Get the global metrics instance."""
     return metrics
 
-
 def generate_metrics() -> bytes:
     """Generate metrics in Prometheus format.
+
+    In multiprocess mode, this aggregates metrics from all processes.
+    In single-process mode, uses the default registry.
 
     Returns:
         Metrics data as bytes in Prometheus exposition format
     """
-    return generate_latest(REGISTRY)
-
+    if MULTIPROC_ENV_VAR in os.environ:
+        # Multiprocess mode: create a new registry and aggregate
+        registry = CollectorRegistry()
+        multiprocess.MultiProcessCollector(registry)
+        return generate_latest(registry)
+    else:
+        # Single-process mode: use default registry
+        return generate_latest(REGISTRY)
 
 def get_content_type() -> str:
     """Get the content type for Prometheus metrics."""
