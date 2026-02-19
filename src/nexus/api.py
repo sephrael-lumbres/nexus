@@ -310,7 +310,7 @@ async def submit_job(request: Request, job_create: JobCreate) -> JobSubmitRespon
         await queue.enqueue(cast(UUID, job.id))
 
         # Record metrics
-        metrics.record_job_submitted(job.job_type)
+        metrics.record_job_submitted(str(job.job_type))
 
         logger.info(
             "Job submitted",

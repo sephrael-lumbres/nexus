@@ -186,7 +186,7 @@ class Worker:
             # Calculate and record job wait time for metrics
             if job.created_at:
                 wait_seconds = (datetime.now(UTC) - job.created_at).total_seconds()
-                self.metrics.record_job_wait_time(job.job_type, wait_seconds)
+                self.metrics.record_job_wait_time(str(job.job_type), wait_seconds)
 
             # Update job to running state
             job.status = JobStatus.RUNNING.value  # type: ignore[assignment]
@@ -198,7 +198,7 @@ class Worker:
 
             # Record that this worker has picked up a job
             self.metrics.record_job_started(
-                job_type=job.job_type,
+                job_type=str(job.job_type),
                 worker_id=self.worker_id,
             )
 
@@ -275,7 +275,7 @@ class Worker:
             model = job.input_data.get("model", "unknown")
             duration_seconds = result.duration_ms / 1000.0 if result.duration_ms else 0.0
             self.metrics.record_job_completed(
-                job_type=job.job_type,
+                job_type=str(job.job_type),
                 worker_id=self.worker_id,
                 duration_seconds=duration_seconds,
                 input_tokens=result.input_tokens or 0,
@@ -314,10 +314,10 @@ class Worker:
 
         # Record failure metrics before branching on retry logic
         self.metrics.record_job_failed(
-            job_type=job.job_type,
+            job_type=str(job.job_type),
             worker_id=self.worker_id,
             error_type=error_type,
-            will_retry=will_retry,
+            will_retry=bool(will_retry),
         )
 
         if will_retry:

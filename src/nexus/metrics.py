@@ -27,7 +27,7 @@ Usage:
 import asyncio
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from functools import wraps
 from typing import Any
@@ -357,7 +357,7 @@ class NexusMetrics:
         self.rate_limit_hits.labels(endpoint=endpoint).inc()
 
     @contextmanager
-    def track_job_duration(self, job_type: str):
+    def track_job_duration(self, job_type: str) -> Generator[None, None, None]:
         """Context manager to track job duration.
 
         Usage:
@@ -371,7 +371,9 @@ class NexusMetrics:
             duration = time.time() - start
             self.job_duration_seconds.labels(job_type=job_type).observe(duration)
 
-    def track_request_duration(self, method: str, endpoint: str):
+    def track_request_duration(
+        self, method: str, endpoint: str
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator to track HTTP request duration.
 
         Usage:
@@ -379,9 +381,9 @@ class NexusMetrics:
             async def submit_job():
                 ...
         """
-        def decorator(func: Callable) -> Callable:
+        def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
             @wraps(func)
-            async def wrapper(*args, **kwargs) -> Any:
+            async def wrapper(*args: Any, **kwargs: Any) -> Any:
                 start = time.time()
                 try:
                     result = await func(*args, **kwargs)
@@ -444,11 +446,11 @@ class MetricsMiddleware:
         app.add_middleware(MetricsMiddleware)
     """
 
-    def __init__(self, app):
+    def __init__(self, app: Any) -> None:
         self.app = app
         self.metrics = get_metrics()
 
-    async def __call__(self, scope, receive, send):
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
@@ -456,7 +458,7 @@ class MetricsMiddleware:
         start_time = time.time()
         status_code = 500  # Default in case of error
 
-        async def send_wrapper(message):
+        async def send_wrapper(message: Any) -> None:
             nonlocal status_code
             if message["type"] == "http.response.start":
                 status_code = message["status"]
@@ -517,7 +519,7 @@ class MetricsCollector:
         await collector.stop()
     """
 
-    def __init__(self, queue, interval_seconds: float = 15.0):
+    def __init__(self, queue: Any, interval_seconds: float = 15.0) -> None:
         """
         Initialize collector.
 
@@ -528,7 +530,7 @@ class MetricsCollector:
         self.queue = queue
         self.interval = interval_seconds
         self.metrics = get_metrics()
-        self._task = None
+        self._task: asyncio.Task[None] | None = None
         self._running = False
 
     async def start(self) -> None:
