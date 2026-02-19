@@ -706,16 +706,12 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "red",
                 "value": null
               },
               {
-                "color": "yellow",
+                "color": "green",
                 "value": 1
-              },
-              {
-                "color": "red",
-                "value": 3
               }
             ]
           },
@@ -745,7 +741,8 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "expr": "nexus_workers_active",
+          "expr": "sum(last_over_time(nexus_workers_active[15s])) or vector(0)",
+          
           "refId": "A"
         }
       ],
