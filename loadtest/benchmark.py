@@ -165,30 +165,37 @@ class BenchmarkRunner:
         async def submit_job(index: int) -> str | None:
             async with semaphore:
                 payload = self._create_payload(job_type, index)
+                submit_start = time.time()
 
-                try:
-                    submit_start = time.time()
-                    response = await self.client.post("/jobs", json=payload)
-
-                    if response.status_code == 201:
-                        job_id = response.json()["id"]
-                        submit_times[job_id] = submit_start
-                        return job_id
-                    elif response.status_code == 429:
-                        # Rate limited, retry after delay
-                        await asyncio.sleep(0.5)
+                # Attempt to submit job up to 5 times total
+                for attempt in range(5):
+                    try:
                         response = await self.client.post("/jobs", json=payload)
+
                         if response.status_code == 201:
                             job_id = response.json()["id"]
                             submit_times[job_id] = submit_start
                             return job_id
 
-                    errors.append(f"Submit failed: {response.status_code}")
-                    return None
+                        elif response.status_code == 429:
+                            # Exponential backoff: 0.5s, 1s, 2s, 4s, 8s
+                            wait = 0.5 * (2 ** attempt)
+                            print(f"\n  ⚠ Rate limited, retrying in {wait:.1f}s "
+                                f"(attempt {attempt + 1}/5)...")
+                            await asyncio.sleep(wait)
+                            continue  # retry the loop
 
-                except Exception as e:
-                    errors.append(f"Submit error: {str(e)}")
-                    return None
+                        else:
+                            errors.append(f"Submit failed: {response.status_code}")
+                            return None
+
+                    except Exception as e:
+                        errors.append(f"Submit error: {str(e)}")
+                        return None
+
+                # All 5 attempts exhausted
+                errors.append("Submit failed: rate limit retries exhausted")
+                return None
 
         # Submit all jobs
         print("  Submitting jobs...", end="", flush=True)
