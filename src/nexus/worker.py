@@ -173,7 +173,21 @@ class Worker:
             job = await repo.get(job_id)
 
             if job is None:
-                self.logger.warning("Job not found in database", job_id=str(job_id))
+                # Safety net: Give the database 1 chance to catch up before giving up.
+                # With the API fix in place (enqueue job AFTER database commit)
+                # this should never trigger. If it does, something more serious is wrong.
+                self.logger.warning(
+                    "Job not found in database, retrying once",
+                    job_id=str(job_id),
+                )
+                await asyncio.sleep(0.1)
+                job = await repo.get(job_id)
+
+            if job is None:
+                self.logger.error(
+                    "Job not found in database after retry, discarding",
+                    job_id=str(job_id),
+                )
                 await self.queue.complete(job_id)
                 return
 

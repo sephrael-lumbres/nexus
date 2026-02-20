@@ -305,20 +305,25 @@ async def submit_job(request: Request, job_create: JobCreate) -> JobSubmitRespon
             max_attempts=job_create.max_attempts,
         )
         job = await repo.create(job)
+        # Capture job ID, job type, and response before session closes
+        job_id = job.id
+        job_type = job.job_type
+        response = JobSubmitResponse.model_validate(job)
+        # session context manager exits here, DB commit happens now
 
-        # Enqueue for processing
-        await queue.enqueue(cast(UUID, job.id))
+    # Enqueue for processing AFTER commit to ensure DB row is visible to workers
+    await queue.enqueue(cast(UUID, job_id))
 
-        # Record metrics
-        metrics.record_job_submitted(str(job.job_type))
+    # Record metrics
+    metrics.record_job_submitted(str(job_type))
 
-        logger.info(
-            "Job submitted",
-            job_id=str(job.id),
-            job_type=job.job_type,
-        )
+    logger.info(
+        "Job submitted",
+        job_id=str(job_id),
+        job_type=job_type,
+    )
 
-        return JobSubmitResponse.model_validate(job)
+    return response
 
 
 @app.get(
