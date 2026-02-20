@@ -55,7 +55,7 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "expr": "sum(nexus_jobs_submitted_total)",
+          "expr": "round(sum(increase(nexus_jobs_submitted_total[$__range])))",
           "refId": "A"
         }
       ],
@@ -108,7 +108,7 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "expr": "sum(nexus_jobs_completed_total)",
+          "expr": "round(sum(increase(nexus_jobs_completed_total[$__range])))",
           "refId": "A"
         }
       ],
@@ -169,7 +169,7 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "expr": "sum(nexus_jobs_failed_total)",
+          "expr": "round(sum(increase(nexus_jobs_failed_total[$__range]) or vector(0)))",
           "refId": "A"
         }
       ],
@@ -222,7 +222,7 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "expr": "sum(nexus_jobs_completed_total) / (sum(nexus_jobs_completed_total) + sum(nexus_jobs_failed_total))",
+          "expr": "sum(increase(nexus_jobs_completed_total[$__range])) / (sum(increase(nexus_jobs_completed_total[$__range])) + sum(increase(nexus_jobs_failed_total[$__range]) or vector(0)))",
           "refId": "A"
         }
       ],
@@ -279,7 +279,7 @@
               }
             ]
           },
-          "unit": "ops"
+          "unit": "short"
         },
         "overrides": []
       },
@@ -305,7 +305,7 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "expr": "sum(rate(nexus_jobs_completed_total[1m])) by (job_type)",
+          "expr": "sum(rate(nexus_jobs_completed_total[$__rate_interval])) by (job_type)",
           "legendFormat": "{{job_type}}",
           "refId": "A"
         }
@@ -389,17 +389,17 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum(rate(nexus_job_duration_seconds_bucket[5m])) by (le, job_type))",
+          "expr": "histogram_quantile(0.50, sum(rate(nexus_job_duration_seconds_bucket[$__rate_interval])) by (le, job_type))",
           "legendFormat": "p50 {{job_type}}",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.95, sum(rate(nexus_job_duration_seconds_bucket[5m])) by (le, job_type))",
+          "expr": "histogram_quantile(0.95, sum(rate(nexus_job_duration_seconds_bucket[$__rate_interval])) by (le, job_type))",
           "legendFormat": "p95 {{job_type}}",
           "refId": "B"
         },
         {
-          "expr": "histogram_quantile(0.99, sum(rate(nexus_job_duration_seconds_bucket[5m])) by (le, job_type))",
+          "expr": "histogram_quantile(0.99, sum(rate(nexus_job_duration_seconds_bucket[$__rate_interval])) by (le, job_type))",
           "legendFormat": "p99 {{job_type}}",
           "refId": "C"
         }
@@ -577,7 +577,7 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "expr": "sum(rate(nexus_tokens_processed_total[5m])) by (direction)",
+          "expr": "sum(rate(nexus_tokens_processed_total[$__rate_interval])) by (direction)",
           "legendFormat": "{{direction}}",
           "refId": "A"
         }
@@ -631,7 +631,7 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "expr": "sum(nexus_cost_usd_total)",
+          "expr": "sum(increase(nexus_cost_usd_total[$__range]))",
           "refId": "A"
         }
       ],
@@ -684,7 +684,7 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "expr": "sum(nexus_tokens_processed_total)",
+          "expr": "sum(increase(nexus_tokens_processed_total[$__range]))",
           "refId": "A"
         }
       ],
@@ -742,7 +742,6 @@
       "targets": [
         {
           "expr": "sum(last_over_time(nexus_workers_active[15s])) or vector(0)",
-          
           "refId": "A"
         }
       ],
@@ -803,7 +802,7 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "expr": "sum(rate(nexus_http_requests_total[5m]))",
+          "expr": "sum(rate(nexus_http_requests_total[$__rate_interval]))",
           "refId": "A"
         }
       ],
