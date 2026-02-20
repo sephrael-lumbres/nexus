@@ -11,8 +11,8 @@
   "panels": [
     {
       "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
+        "type": "postgres",
+        "uid": "postgres"
       },
       "fieldConfig": {
         "defaults": {
@@ -42,11 +42,13 @@
       "id": 1,
       "options": {
         "colorMode": "value",
-        "graphMode": "area",
+        "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -55,7 +57,12 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "expr": "round(sum(increase(nexus_jobs_submitted_total[$__range])))",
+          "datasource": {
+            "type": "postgres",
+            "uid": "postgres"
+          },
+          "rawSql": "SELECT COUNT(*) as value FROM jobs WHERE created_at >= $__timeFrom() AND created_at <= $__timeTo()",
+          "format": "table",
           "refId": "A"
         }
       ],
@@ -64,8 +71,8 @@
     },
     {
       "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
+        "type": "postgres",
+        "uid": "postgres"
       },
       "fieldConfig": {
         "defaults": {
@@ -95,11 +102,13 @@
       "id": 2,
       "options": {
         "colorMode": "value",
-        "graphMode": "area",
+        "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -108,7 +117,12 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "expr": "round(sum(increase(nexus_jobs_completed_total[$__range])))",
+          "datasource": {
+            "type": "postgres",
+            "uid": "postgres"
+          },
+          "rawSql": "SELECT COUNT(*) as value FROM jobs WHERE status = 'completed' AND completed_at >= $__timeFrom() AND completed_at <= $__timeTo()",
+          "format": "table",
           "refId": "A"
         }
       ],
@@ -117,8 +131,8 @@
     },
     {
       "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
+        "type": "postgres",
+        "uid": "postgres"
       },
       "fieldConfig": {
         "defaults": {
@@ -156,11 +170,13 @@
       "id": 3,
       "options": {
         "colorMode": "value",
-        "graphMode": "area",
+        "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -169,7 +185,12 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "expr": "round(sum(increase(nexus_jobs_failed_total[$__range]) or vector(0)))",
+          "datasource": {
+            "type": "postgres",
+            "uid": "postgres"
+          },
+          "rawSql": "SELECT COUNT(*) as value FROM jobs WHERE status IN ('failed', 'dead') AND completed_at >= $__timeFrom() AND completed_at <= $__timeTo()",
+          "format": "table",
           "refId": "A"
         }
       ],
@@ -178,8 +199,8 @@
     },
     {
       "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
+        "type": "postgres",
+        "uid": "postgres"
       },
       "fieldConfig": {
         "defaults": {
@@ -209,11 +230,13 @@
       "id": 4,
       "options": {
         "colorMode": "value",
-        "graphMode": "area",
+        "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -222,7 +245,12 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "expr": "sum(increase(nexus_jobs_completed_total[$__range])) / (sum(increase(nexus_jobs_completed_total[$__range])) + sum(increase(nexus_jobs_failed_total[$__range]) or vector(0)))",
+          "datasource": {
+            "type": "postgres",
+            "uid": "postgres"
+          },
+          "rawSql": "SELECT\n  CASE\n    WHEN (completed + failed) = 0 THEN 0\n    ELSE ROUND(completed::numeric / (completed + failed), 4)\n  END as value\nFROM (\n  SELECT\n    COUNT(*) FILTER (WHERE status = 'completed' AND completed_at >= $__timeFrom() AND completed_at <= $__timeTo()) as completed,\n    COUNT(*) FILTER (WHERE status IN ('failed', 'dead') AND completed_at >= $__timeFrom() AND completed_at <= $__timeTo()) as failed\n  FROM jobs\n) counts",
+          "format": "table",
           "refId": "A"
         }
       ],
@@ -292,7 +320,10 @@
       "id": 5,
       "options": {
         "legend": {
-          "calcs": ["mean", "max"],
+          "calcs": [
+            "mean",
+            "max"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -376,7 +407,10 @@
       "id": 6,
       "options": {
         "legend": {
-          "calcs": ["mean", "p95"],
+          "calcs": [
+            "mean",
+            "max"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -470,7 +504,9 @@
       "id": 7,
       "options": {
         "legend": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -564,7 +600,10 @@
       "id": 8,
       "options": {
         "legend": {
-          "calcs": ["mean", "sum"],
+          "calcs": [
+            "mean",
+            "sum"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -622,7 +661,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -675,7 +716,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -732,7 +775,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -793,7 +838,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -813,7 +860,11 @@
   "refresh": "10s",
   "schemaVersion": 38,
   "style": "dark",
-  "tags": ["nexus", "jobs", "llm"],
+  "tags": [
+    "nexus",
+    "jobs",
+    "llm"
+  ],
   "templating": {
     "list": []
   },
