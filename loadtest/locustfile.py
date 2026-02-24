@@ -223,7 +223,12 @@ class JobMonitor(HttpUser):
         # Submit job
         payload = random_completion_payload()
 
-        with self.client.post("/jobs", json=payload, name="/jobs [submit]") as response:
+        with self.client.post(
+            "/jobs",
+            json=payload,
+            name="/jobs [submit]",
+            catch_response=True
+        ) as response:
             if response.status_code != 201:
                 return
 
