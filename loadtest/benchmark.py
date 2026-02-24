@@ -37,7 +37,7 @@ class BenchmarkConfig:
     quick_jobs: int = 50
     standard_jobs: int = 200
     full_jobs: int = 500
-    concurrent_workers: int = 10
+    concurrent_submitters: int = 10
     poll_interval: float = 0.1
     poll_timeout: float = 60.0
 
@@ -59,10 +59,12 @@ class BenchmarkResult:
     total_tokens: int = 0
     total_cost_usd: float = 0.0
     errors: list[str] = field(default_factory=list)
+    worker_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
+            "worker_count": self.worker_count,
             "jobs_submitted": self.jobs_submitted,
             "jobs_completed": self.jobs_completed,
             "jobs_failed": self.jobs_failed,
@@ -125,6 +127,17 @@ class BenchmarkRunner:
         """Cleanup after benchmarks."""
         if self.client:
             await self.client.aclose()
+
+    def _get_worker_count(self) -> int:
+        """Read Nexus worker count from environment.
+
+        Reads WORKER_COUNT, matching the env var used to
+        start the worker pool (e.g. WORKER_COUNT=5 python
+        -m nexus.worker). Falls back to the Settings
+        default of 3 if not set.
+        """
+        import os
+        return int(os.environ.get("WORKER_COUNT", 3))
 
     async def run_benchmark(
         self,
@@ -276,6 +289,7 @@ class BenchmarkRunner:
             total_tokens=total_tokens,
             total_cost_usd=total_cost,
             errors=errors,
+            worker_count=self._get_worker_count(),
         )
 
         self._print_result(result)
@@ -344,7 +358,7 @@ async def run_quick_benchmark(config: BenchmarkConfig) -> list[BenchmarkResult]:
         result = await runner.run_benchmark(
             "Quick Throughput",
             job_count=config.quick_jobs,
-            concurrent=config.concurrent_workers,
+            concurrent=config.concurrent_submitters,
         )
         results.append(result)
 
@@ -376,7 +390,7 @@ async def run_standard_benchmark(config: BenchmarkConfig) -> list[BenchmarkResul
             "Completion Jobs",
             job_count=config.standard_jobs,
             job_type="llm.completion",
-            concurrent=config.concurrent_workers,
+            concurrent=config.concurrent_submitters,
         )
         results.append(result)
 
@@ -385,7 +399,7 @@ async def run_standard_benchmark(config: BenchmarkConfig) -> list[BenchmarkResul
             "Batch Jobs",
             job_count=config.standard_jobs // 2,
             job_type="llm.batch",
-            concurrent=config.concurrent_workers,
+            concurrent=config.concurrent_submitters,
         )
         results.append(result)
 
@@ -393,7 +407,7 @@ async def run_standard_benchmark(config: BenchmarkConfig) -> list[BenchmarkResul
         result = await runner.run_benchmark(
             "High Concurrency",
             job_count=config.standard_jobs,
-            concurrent=config.concurrent_workers * 2,
+            concurrent=config.concurrent_submitters * 2,
         )
         results.append(result)
 
@@ -432,7 +446,7 @@ async def run_full_benchmark(config: BenchmarkConfig) -> list[BenchmarkResult]:
         result = await runner.run_benchmark(
             "Standard Throughput",
             job_count=config.standard_jobs,
-            concurrent=config.concurrent_workers,
+            concurrent=config.concurrent_submitters,
         )
         results.append(result)
 
@@ -440,7 +454,7 @@ async def run_full_benchmark(config: BenchmarkConfig) -> list[BenchmarkResult]:
         result = await runner.run_benchmark(
             "High Throughput",
             job_count=config.full_jobs,
-            concurrent=config.concurrent_workers * 2,
+            concurrent=config.concurrent_submitters * 2,
         )
         results.append(result)
 
@@ -449,7 +463,7 @@ async def run_full_benchmark(config: BenchmarkConfig) -> list[BenchmarkResult]:
             "Batch Processing",
             job_count=config.standard_jobs // 2,
             job_type="llm.batch",
-            concurrent=config.concurrent_workers,
+            concurrent=config.concurrent_submitters,
         )
         results.append(result)
 
@@ -457,7 +471,7 @@ async def run_full_benchmark(config: BenchmarkConfig) -> list[BenchmarkResult]:
         result = await runner.run_benchmark(
             "Stress Test",
             job_count=config.full_jobs,
-            concurrent=config.concurrent_workers * 3,
+            concurrent=config.concurrent_submitters * 3,
         )
         results.append(result)
 
@@ -472,10 +486,13 @@ async def run_full_benchmark(config: BenchmarkConfig) -> list[BenchmarkResult]:
 # =============================================================================
 def generate_report(results: list[BenchmarkResult], output_path: Path | None = None):
     """Generate benchmark report."""
+    import os
+    worker_count = int(os.environ.get("WORKER_COUNT", 3))
     print("\n" + "=" * 60)
     print("BENCHMARK REPORT")
     print("=" * 60)
     print(f"Generated: {datetime.now().isoformat()}")
+    print(f"Nexus Workers: {worker_count}")
     print()
 
     # Summary table
@@ -530,6 +547,7 @@ def generate_report(results: list[BenchmarkResult], output_path: Path | None = N
     if output_path:
         report_data = {
             "generated_at": datetime.now().isoformat(),
+            "worker_count": worker_count,
             "results": [r.to_dict() for r in results],
         }
         output_path.write_text(json.dumps(report_data, indent=2))
@@ -564,22 +582,22 @@ async def main():
         help="Output file for JSON report",
     )
     parser.add_argument(
-        "--workers",
+        "--submitters",
         type=int,
         default=10,
-        help="Number of concurrent workers",
+        help="Number of concurrent job submitters",
     )
 
     args = parser.parse_args()
 
     config = BenchmarkConfig(
         base_url=args.url,
-        concurrent_workers=args.workers,
+        concurrent_submitters=args.submitters,
     )
 
     print("🚀 Nexus Benchmark Suite")
     print(f"   URL: {config.base_url}")
-    print(f"   Workers: {config.concurrent_workers}")
+    print(f"   Submitters: {config.concurrent_submitters}")
 
     if args.quick:
         print("   Mode: Quick")

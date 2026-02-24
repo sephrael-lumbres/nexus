@@ -117,11 +117,13 @@ class MetricsCollector:
         self.jobs_failed += 1
 
     def get_summary(self) -> dict:
+        import os
         avg_completion_time = (
             sum(self.completion_times) / len(self.completion_times)
             if self.completion_times else 0
         )
         return {
+            "worker_count": int(os.environ.get("WORKER_COUNT", 3)),
             "jobs_submitted": self.jobs_submitted,
             "jobs_completed": self.jobs_completed,
             "jobs_failed": self.jobs_failed,
