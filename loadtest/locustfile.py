@@ -24,11 +24,21 @@ Run scenarios:
         --headless -u 200 -r 20 -t 60s --tags stress
 """
 
+import asyncio
+import json
+import os
 import random
 import time
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from locust import HttpUser, between, events, tag, task
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.orm import sessionmaker
+
+from nexus.models import JobRecord
 
 # =============================================================================
 # Test Data
@@ -117,7 +127,6 @@ class MetricsCollector:
         self.jobs_failed += 1
 
     def get_summary(self) -> dict:
-        import os
         avg_completion_time = (
             sum(self.completion_times) / len(self.completion_times)
             if self.completion_times else 0
@@ -137,20 +146,148 @@ class MetricsCollector:
         }
 
 
-# Global metrics collector
+# =============================================================================
+# Global Variables
+# =============================================================================
 metrics = MetricsCollector()
+test_start_time = None
+test_end_time = None
+
+
+# =============================================================================
+# Database Stats Query Helper
+# =============================================================================
+async def get_db_stats(start_time: datetime, end_time: datetime) -> dict:
+    """Query job statistics from database for jobs created in time window.
+
+    Args:
+        start_time: Start of test run
+        end_time: End of test run
+
+    Returns:
+        Dictionary with job counts by status
+    """
+    database_url = os.getenv("DATABASE_URL", "postgresql+asyncpg://nexus:nexus@localhost:5432/nexus")
+
+    engine = create_async_engine(database_url)
+    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    try:
+        async with async_session() as session:
+            # Query for jobs created during test run
+            query = select(
+                JobRecord.status,
+                func.count(JobRecord.id).label('count')
+            ).where(
+                JobRecord.created_at >= start_time,
+                JobRecord.created_at <= end_time
+            ).group_by(JobRecord.status)
+
+            result = await session.execute(query)
+            status_counts = {row.status: row.count for row in result}
+
+            return {
+                'completed': status_counts.get('completed', 0),
+                'failed': status_counts.get('failed', 0),
+                'pending': status_counts.get('pending', 0),
+                'processing': status_counts.get('running', 0),
+                'total': sum(status_counts.values()),
+            }
+    finally:
+        await engine.dispose()
+
+
+# =============================================================================
+# Event Listeners
+# =============================================================================
+@events.test_start.add_listener
+def on_test_start(environment, **kwargs):
+    """Record test start time."""
+    global test_start_time
+    test_start_time = datetime.now()
+    print(f"\n{'=' * 60}")
+    print(f"Load test started: {test_start_time.isoformat()}")
+    print(f"{'=' * 60}\n")
 
 
 @events.test_stop.add_listener
 def on_test_stop(environment, **kwargs):
-    """Print summary when test stops."""
+    """Print summary and save to JSON when test stops."""
+    global test_end_time
+    test_end_time = datetime.now()
     summary = metrics.get_summary()
+    duration = None
+
+    # Extract test configuration from environment
+    test_config = {
+        "host": environment.parsed_options.host,
+        "users": environment.parsed_options.num_users,
+        "spawn_rate": environment.parsed_options.spawn_rate,
+        "run_time": environment.parsed_options.run_time,
+        "test_type": os.getenv("TEST_TYPE", "unknown"),
+    }
+
+    # Query database for stats
+    try:
+        server_stats = asyncio.run(get_db_stats(test_start_time, test_end_time))
+    except Exception as e:
+        print(f"Failed to query database: {e}")
+        server_stats = None
+
+    # Print to console
     print("\n" + "=" * 60)
     print("LOAD TEST SUMMARY")
     print("=" * 60)
+
+    # Print test configuration
+    print("TEST CONFIGURATION:")
+    print(f"  Host:        {test_config['host']}")
+    print(f"  Users:       {test_config['users']}")
+    print(f"  Spawn Rate:  {test_config['spawn_rate']}/s")
+    print(f"  Run Time:    {test_config['run_time']}")
+    print(f"  Test Type:   {test_config['test_type']}")
+
+    if test_start_time and test_end_time:
+        duration = (test_end_time - test_start_time).total_seconds()
+        print("\nTEST EXECUTION:")
+        print(f"  Started:  {test_start_time.isoformat()}")
+        print(f"  Ended:    {test_end_time.isoformat()}")
+        print(f"  Duration: {duration:.2f}s")
+
+    print("\nCLIENT STATS:")
     for key, value in summary.items():
         print(f"  {key}: {value}")
+
+    if server_stats:
+        print("\nSERVER STATS (from database):")
+        print(f"  completed:  {server_stats.get('completed', 'N/A')}")
+        print(f"  failed:     {server_stats.get('failed', 'N/A')}")
+        print(f"  pending:    {server_stats.get('pending', 'N/A')}")
+        print(f"  processing: {server_stats.get('processing', 'N/A')}")
+        print(f"  total:      {server_stats.get('total', 'N/A')}")
+
     print("=" * 60 + "\n")
+
+    # Save to JSON
+    output_dir = Path("loadtest/results/locust")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = test_start_time.strftime("%Y-%m-%dT%H:%M:%S")
+    output_file = output_dir / f"locust_{test_config['test_type']}_{timestamp}.json"
+
+    result = {
+        "test_config": test_config,
+        "test_start": test_start_time.isoformat() if test_start_time else None,
+        "test_end": test_end_time.isoformat() if test_end_time else None,
+        "duration_seconds": duration,
+        "client_stats": summary,
+        "server_stats": server_stats or {},
+    }
+
+    with open(output_file, 'w') as f:
+        json.dump(result, f, indent=2)
+
+    print(f"Results saved to: {output_file}\n")
 
 
 # =============================================================================

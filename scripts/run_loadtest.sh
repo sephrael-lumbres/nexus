@@ -20,7 +20,7 @@ TIMESTAMP=$(date +%Y-%m-%dT%H:%M:%S)
 LOCUST_RESULTS_DIR="loadtest/results/locust"
 BENCHMARK_RESULTS_DIR="loadtest/results/benchmark"
 
-# Ensure both results directories exists
+# Ensure both results directories exist
 mkdir -p "${LOCUST_RESULTS_DIR}"
 mkdir -p "${BENCHMARK_RESULTS_DIR}"
 
@@ -28,7 +28,6 @@ mkdir -p "${BENCHMARK_RESULTS_DIR}"
 echo "========================================"
 echo "  Nexus Load Test Runner"
 echo "========================================"
-echo ""
 
 # Function to check if service is healthy
 check_health() {
@@ -53,7 +52,7 @@ check_workers() {
         echo -e "${GREEN}✅ Workers appear to be running${NC}"
         return 0
     else
-        echo -e "${RED}❌  No active workers${NC}"
+        echo -e "${RED}❌ No active workers${NC}"
         echo -e "${YELLOW}   Start workers: WORKER_COUNT=3 python -m nexus.worker${NC}"
         echo ""
         read -p "Continue anyway? (y/n) " -n 1 -r
@@ -92,6 +91,9 @@ run_locust() {
             TAGS=""
             ;;
     esac
+
+    # Export TEST_TYPE so locustfile.py can read it
+    export TEST_TYPE="${test_type}"
     
     locust -f loadtest/locustfile.py \
         --host="${HOST}" \
@@ -105,22 +107,6 @@ run_locust() {
     echo ""
     echo -e "${GREEN}✅ Load test complete${NC}"
     
-    # Show current queue state
-    echo ""
-    echo -e "${YELLOW}Current queue state:${NC}"
-    curl -s "${HOST}/queue/stats" | jq '.' || echo "Could not fetch queue stats"
-    
-    echo ""
-    echo -e "${YELLOW}Current system stats:${NC}"
-    curl -s "${HOST}/stats" | jq '{
-        total_jobs,
-        completed: .jobs_by_status.completed,
-        failed: .jobs_by_status.failed,
-        pending: .jobs_by_status.pending,
-        success_rate,
-        total_cost_usd
-    }' || echo "Could not fetch system stats"
-    
     # Check if jobs are still pending
     pending=$(curl -s "${HOST}/queue/stats" 2>/dev/null | jq -r '.pending // 0')
     if [ "$pending" -gt 0 ]; then
@@ -128,6 +114,11 @@ run_locust() {
         echo -e "${YELLOW}Note: ${pending} jobs still pending. Workers are processing...${NC}"
         echo -e "${YELLOW}      Check stats again in a few minutes for final results.${NC}"
     fi
+
+    echo ""
+    echo -e "${YELLOW}📊 Results saved:${NC}"
+    echo "  JSON: ${LOCUST_RESULTS_DIR}/locust_${test_type}_${TIMESTAMP}.json"
+    echo "  HTML: ${LOCUST_RESULTS_DIR}/locust_${test_type}_${TIMESTAMP}.html"
 }
 
 # Function to run benchmark
@@ -188,12 +179,12 @@ case $COMMAND in
     help|*)
         echo "Usage: $0 <command> [options]"
         echo ""
-        echo "Prerequisites:"
+        echo -e "${YELLOW}Prerequisites:${NC}"
         echo "  Terminal 1: python -m nexus.api"
         echo "  Terminal 2: python -m nexus.worker 3"
         echo "  Terminal 3: $0 <command>"
         echo ""
-        echo "Commands:"
+        echo -e "${YELLOW}Commands:${NC}"
         echo "  locust [type]     Run Locust load test"
         echo "                    Types: throughput, stress, endurance, mixed (default)"
         echo ""
@@ -204,13 +195,13 @@ case $COMMAND in
         echo ""
         echo "  ci                Run quick tests for CI/CD"
         echo ""
-        echo "Environment Variables:"
+        echo -e "${YELLOW}Environment Variables:${NC}"
         echo "  HOST              API URL (default: http://localhost:8000)"
         echo "  USERS             Number of concurrent users (default: 50)"
         echo "  SPAWN_RATE        Users spawned per second (default: 10)"
         echo "  DURATION          Test duration (default: 60s)"
         echo ""
-        echo "Examples:"
+        echo -e "${YELLOW}Examples:${NC}"
         echo "  $0 benchmark quick"
         echo "  $0 locust throughput"
         echo "  USERS=100 DURATION=120s $0 locust stress"
