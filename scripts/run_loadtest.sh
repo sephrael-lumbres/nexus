@@ -47,7 +47,7 @@ check_workers() {
     echo -e "${YELLOW}Checking for workers...${NC}"
     
     # Verify that there are active workers and grab the number of active workers
-    workers=$(curl -s http://localhost:8000/metrics | grep "nexus_workers_active" | grep -v "^#" | grep -v "0.0$" | awk '{print int($2)}')
+    workers=$(curl -s http://localhost:8000/metrics | awk '/nexus_workers_active/ && !/^#/ && $2 != "0.0" {print int($2)}')
     if [ "$workers" != "0" ] && [ -n "$workers" ]; then
         echo -e "${GREEN}  $workers Workers appear to be running${NC}"
         export WORKER_COUNT=$workers
@@ -131,13 +131,13 @@ run_benchmark() {
     
     case $mode in
         quick)
-            python -m loadtest.benchmark --quick --url "${HOST}"
+            python -m loadtest.benchmark --quick --url "${HOST}" --output "${BENCHMARK_RESULTS_DIR}/benchmark_${mode}_${TIMESTAMP}.json"
             ;;
         full)
-            python -m loadtest.benchmark --full --url "${HOST}" --output "${BENCHMARK_RESULTS_DIR}/benchmark_${TIMESTAMP}.json"
+            python -m loadtest.benchmark --full --url "${HOST}" --output "${BENCHMARK_RESULTS_DIR}/benchmark_${mode}_${TIMESTAMP}.json"
             ;;
         *)
-            python -m loadtest.benchmark --url "${HOST}" --output "${BENCHMARK_RESULTS_DIR}/benchmark_${TIMESTAMP}.json"
+            python -m loadtest.benchmark --url "${HOST}" --output "${BENCHMARK_RESULTS_DIR}/benchmark_${mode}_${TIMESTAMP}.json"
             ;;
     esac
 }
