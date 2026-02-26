@@ -24,36 +24,37 @@ BENCHMARK_RESULTS_DIR="loadtest/results/benchmark"
 mkdir -p "${LOCUST_RESULTS_DIR}"
 mkdir -p "${BENCHMARK_RESULTS_DIR}"
 
-# Print banner
 echo "========================================"
 echo "  Nexus Load Test Runner"
 echo "========================================"
 
-# Function to check if service is healthy
+# Check if API is running and healthy
 check_health() {
     echo -e "${YELLOW}Checking API health...${NC}"
     
     if curl -s "${HOST}/health" | grep -q "healthy"; then
-        echo -e "${GREEN}✅ API is healthy${NC}"
+        echo -e "${GREEN}  API is healthy${NC}"
         return 0
     else
-        echo -e "${RED}❌ API is not healthy${NC}"
-        echo -e "${RED}   Start API: python -m nexus.api${NC}"
+        echo -e "${RED}  API is not healthy${NC}"
+        echo -e "${RED}    Start API: python -m nexus.api${NC}"
         return 1
     fi
 }
 
-# Function to check if workers are likely running
+# Check if workers are running and export WORKER_COUNT so load tests can read it
 check_workers() {
     echo -e "${YELLOW}Checking for workers...${NC}"
     
-    # Verify that there are active workers
-    if curl -s http://localhost:8000/metrics | grep "nexus_workers_active" | grep -v "^#" | grep -v "0.0$" > /dev/null; then
-        echo -e "${GREEN}✅ Workers appear to be running${NC}"
+    # Verify that there are active workers and grab the number of active workers
+    workers=$(curl -s http://localhost:8000/metrics | grep "nexus_workers_active" | grep -v "^#" | grep -v "0.0$" | awk '{print int($2)}')
+    if [ "$workers" != "0" ] && [ -n "$workers" ]; then
+        echo -e "${GREEN}  $workers Workers appear to be running${NC}"
+        export WORKER_COUNT=$workers
         return 0
     else
-        echo -e "${RED}❌ No active workers${NC}"
-        echo -e "${YELLOW}   Start workers: WORKER_COUNT=3 python -m nexus.worker${NC}"
+        echo -e "${RED}  No active workers${NC}"
+        echo -e "${YELLOW}    Start workers in separate terminal: WORKER_COUNT=3 python -m nexus.worker${NC}"
         echo ""
         read -p "Continue anyway? (y/n) " -n 1 -r
         echo
@@ -64,7 +65,6 @@ check_workers() {
     fi
 }
 
-# Function to run locust test
 run_locust() {
     local test_type="${1:-mixed}"
     
@@ -105,7 +105,7 @@ run_locust() {
         --html="${LOCUST_RESULTS_DIR}/locust_${test_type}_${TIMESTAMP}.html"
 
     echo ""
-    echo -e "${GREEN}✅ Load test complete${NC}"
+    echo -e "${GREEN}Load test complete${NC}"
     
     # Check if jobs are still pending
     pending=$(curl -s "${HOST}/queue/stats" 2>/dev/null | jq -r '.pending // 0')
@@ -116,12 +116,11 @@ run_locust() {
     fi
 
     echo ""
-    echo -e "${YELLOW}📊 Results saved:${NC}"
+    echo -e "${YELLOW}Results saved:${NC}"
     echo "  JSON: ${LOCUST_RESULTS_DIR}/locust_${test_type}_${TIMESTAMP}.json"
     echo "  HTML: ${LOCUST_RESULTS_DIR}/locust_${test_type}_${TIMESTAMP}.html"
 }
 
-# Function to run benchmark
 run_benchmark() {
     local mode="${1:-standard}"
     
