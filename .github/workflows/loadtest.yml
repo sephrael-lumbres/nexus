@@ -71,6 +71,7 @@ jobs:
           DATABASE_URL: postgresql+asyncpg://nexus:nexus@localhost:5432/nexus
           REDIS_URL: redis://localhost:6379/0
           LLM_PROVIDER: mock
+          RATE_LIMIT_PER_MINUTE: 1000
         run: |
           python -m nexus.api &
           sleep 5
@@ -91,24 +92,9 @@ jobs:
           REDIS_URL: redis://localhost:6379/0
           LLM_PROVIDER: mock
           WORKER_COUNT: 10
-          RATE_LIMIT_PER_MINUTE: 1000
         run: |
           python -m nexus.worker &
-          
-          # Wait for first metrics collection cycle (15s interval)
-          echo "Waiting 20 seconds for metrics collection..."
-          sleep 20
-
-          # Now check workers
-          for i in {1..10}; do
-            WORKERS=$(curl -s http://localhost:8000/metrics | awk '/nexus_workers_active/ && !/^#/ && $2 != "0.0" {print int($2)}')
-            if [ -n "$WORKERS" ] && [ "$WORKERS" -gt 0 ]; then
-              echo "$WORKERS workers active"
-              break
-            fi
-            echo "Waiting for workers... ($i/10)"
-            sleep 3
-          done
+          sleep 5
       
       - name: Run Benchmark
         env:
