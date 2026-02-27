@@ -91,19 +91,23 @@ jobs:
           REDIS_URL: redis://localhost:6379/0
           LLM_PROVIDER: mock
           WORKER_COUNT: 10
+          RATE_LIMIT_PER_MINUTE: 1000
         run: |
           python -m nexus.worker &
-          sleep 3
+          
+          # Wait for first metrics collection cycle (15s interval)
+          echo "Waiting 20 seconds for metrics collection..."
+          sleep 20
 
-          # Wait for workers to register
-          for i in {1..15}; do
+          # Now check workers
+          for i in {1..10}; do
             WORKERS=$(curl -s http://localhost:8000/metrics | awk '/nexus_workers_active/ && !/^#/ && $2 != "0.0" {print int($2)}')
             if [ -n "$WORKERS" ] && [ "$WORKERS" -gt 0 ]; then
               echo "$WORKERS workers active"
               break
             fi
-            echo "Waiting for workers... ($i/15)"
-            sleep 2
+            echo "Waiting for workers... ($i/10)"
+            sleep 3
           done
       
       - name: Run Benchmark
