@@ -1,0 +1,159 @@
+name: Load Tests
+
+on:
+  # Run on demand
+  workflow_dispatch:
+    inputs:
+      test_type:
+        description: 'Test type (quick, standard, full)'
+        required: true
+        default: 'standard'
+        type: choice
+        options:
+          - quick
+          - standard
+          - full
+  
+  # Run weekly on Sunday 2 AM UTC
+  schedule:
+    - cron: '0 2 * * 0'
+
+jobs:
+  loadtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    
+    services:
+      postgres:
+        image: postgres:14-alpine
+        env:
+          POSTGRES_USER: nexus
+          POSTGRES_PASSWORD: nexus
+          POSTGRES_DB: nexus
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install -e ".[loadtest]"
+      
+      - name: Run migrations
+        env:
+          DATABASE_URL: postgresql+asyncpg://nexus:nexus@localhost:5432/nexus
+        run: |
+          alembic upgrade head
+      
+      - name: Start API
+        env:
+          DATABASE_URL: postgresql+asyncpg://nexus:nexus@localhost:5432/nexus
+          REDIS_URL: redis://localhost:6379/0
+          LLM_PROVIDER: mock
+        run: |
+          python -m nexus.api &
+          sleep 5
+
+          # Wait for API to be healthy
+          for i in {1..30}; do
+            if curl -s http://localhost:8000/health | grep -q "healthy"; then
+              echo "API is healthy"
+              break
+            fi
+            echo "Waiting for API... ($i/30)"
+            sleep 2
+          done
+      
+      - name: Start Workers
+        env:
+          DATABASE_URL: postgresql+asyncpg://nexus:nexus@localhost:5432/nexus
+          REDIS_URL: redis://localhost:6379/0
+          LLM_PROVIDER: mock
+          WORKER_COUNT: 10
+        run: |
+          python -m nexus.worker &
+          sleep 3
+
+          # Wait for workers to register
+          for i in {1..15}; do
+            WORKERS=$(curl -s http://localhost:8000/metrics | awk '/nexus_workers_active/ && !/^#/ && $2 != "0.0" {print int($2)}')
+            if [ -n "$WORKERS" ] && [ "$WORKERS" -gt 0 ]; then
+              echo "$WORKERS workers active"
+              break
+            fi
+            echo "Waiting for workers... ($i/15)"
+            sleep 2
+          done
+      
+      - name: Run Benchmark
+        env:
+          TEST_TYPE: ${{ github.event.inputs.test_type || 'standard' }}
+        run: |
+          TIMESTAMP=$(date +%Y-%m-%dT%H-%M-%S)
+          mkdir -p loadtest/results/benchmark
+          echo "Running ${TEST_TYPE} benchmark..."
+          python -m loadtest.benchmark \
+            --${TEST_TYPE} \
+            --output loadtest/results/benchmark/benchmark_${TEST_TYPE}_${TIMESTAMP}.json
+      
+      - name: Display Results Summary
+        if: always()
+        run: |
+          echo "========================================="
+          echo "Benchmark Results Summary"
+          echo "========================================="
+          LATEST=$(ls -t loadtest/results/benchmark/benchmark_*.json | head -1)
+          cat "$LATEST" | jq '.results[] | {users: .concurrent_users, throughput: .throughput_jobs_per_sec, p95_latency: .p95_latency_ms}'
+      
+      - name: Upload Results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: loadtest-results-${{ github.event.inputs.test_type || 'standard' }}-run${{ github.run_number }}
+          path: loadtest/results/
+          retention-days: 90
+      
+      - name: Check Thresholds
+        run: |
+          LATEST=$(ls -t loadtest/results/benchmark/benchmark_*.json | head -1)
+          THROUGHPUT=$(cat "$LATEST" | jq '.results[-1].throughput_jobs_per_sec')
+          
+          echo "========================================="
+          echo "Performance Threshold Check"
+          echo "========================================="
+          echo "Throughput: $THROUGHPUT jobs/sec"
+          echo "Target:     50 jobs/sec"
+          echo "========================================="
+          
+          if (( $(echo "$THROUGHPUT < 50" | bc -l) )); then
+            echo "FAIL: Throughput below target"
+            echo ""
+            echo "Performance regression detected!"
+            echo "Expected: ≥50 jobs/sec"
+            echo "Actual:   $THROUGHPUT jobs/sec"
+            exit 1
+          else
+            echo "PASS: Performance meets target"
+            exit 0
+          fi
