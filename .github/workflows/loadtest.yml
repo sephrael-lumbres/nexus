@@ -58,7 +58,7 @@ jobs:
       
       - name: Install dependencies
         run: |
-          pip install -e ".[loadtest]"
+          pip install -e .
       
       - name: Run migrations
         env:
@@ -113,8 +113,21 @@ jobs:
           TIMESTAMP=$(date +%Y-%m-%dT%H-%M-%S)
           mkdir -p loadtest/results/benchmark
           echo "Running ${TEST_TYPE} benchmark..."
-          python -m loadtest.benchmark \
-            --${TEST_TYPE} \
+          
+          # Build command based on test type
+          case "${TEST_TYPE}" in
+            quick)
+              FLAG="--quick"
+              ;;
+            full)
+              FLAG="--full"
+              ;;
+            standard)
+              FLAG=""  # No flag for standard (it's the default)
+              ;;
+          esac
+          
+          python -m loadtest.benchmark ${FLAG} \
             --output loadtest/results/benchmark/benchmark_${TEST_TYPE}_${TIMESTAMP}.json
       
       - name: Display Results Summary
