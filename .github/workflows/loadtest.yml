@@ -99,6 +99,7 @@ jobs:
       - name: Run Benchmark
         env:
           TEST_TYPE: ${{ github.event.inputs.test_type || 'standard' }}
+          WORKER_COUNT: 10
         run: |
           TIMESTAMP=$(date +%Y-%m-%dT%H-%M-%S)
           mkdir -p loadtest/results/benchmark
