@@ -86,9 +86,12 @@ dmypy.json
 # ==========================
 # Nexus Project Specific
 # ==========================
-
 # Load test results
 loadtest/results/
 
 # Grafana data
 grafana_data/
+
+# Explicitly track these (documentation, not secrets)
+!.env.example
+!.env.production

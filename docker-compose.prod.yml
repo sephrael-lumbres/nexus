@@ -165,7 +165,7 @@ services:
       - "--storage.tsdb.path=/prometheus"
       - "--storage.tsdb.retention.time=7d"
     ports:
-      - "${PROMETHEUS_PORT:-9090}:9090"
+      - "${METRICS_PORT:-9090}:9090"
     mem_limit: 512m
     cpus: 0.5
     networks:
