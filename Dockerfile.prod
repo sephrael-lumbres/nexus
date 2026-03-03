@@ -1,0 +1,81 @@
+# Production-optimized multi-stage build for Nexus
+#
+# Security features:
+# - Non-root user execution
+# - Minimal runtime dependencies
+# - No build tools in final image
+#
+# Size optimization:
+# - Multi-stage build (~80% smaller than single-stage)
+# - Virtual environment isolation
+# - Aggressive apt cleanup
+
+# ==============================================================================
+# Build Stage
+# ==============================================================================
+FROM python:3.11-slim AS builder
+
+WORKDIR /app
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libpq-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create virtual environment
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Install Python dependencies
+COPY pyproject.toml .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir .
+
+# ==============================================================================
+# Production Stage
+# ==============================================================================
+FROM python:3.11-slim AS production
+
+WORKDIR /app
+
+# Install runtime dependencies only
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --shell /bin/bash nexus
+
+# Copy virtual environment from builder stage
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Copy application code
+COPY --chown=nexus:nexus src/ src/
+COPY --chown=nexus:nexus alembic/ alembic/
+COPY --chown=nexus:nexus alembic.ini .
+
+# Set environment variables
+ENV PYTHONPATH=/app/src \
+    # Force stdout/stderr to be unbuffered (important for logging)
+    PYTHONUNBUFFERED=1 \
+    # Disable .pyc file generation (reduces image size, avoids permission issues)
+    PYTHONDONTWRITEBYTECODE=1 \
+    # Disable pip cache (already built, saves space)
+    PIP_NO_CACHE_DIR=1 \
+    # Skip pip version check (faster startup)
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Switch to non-root user for security
+USER nexus
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:${PORT:-8000}/health || exit 1
+
+# Default port
+EXPOSE 8000
+
+# Default command (overridden by Procfile)
+CMD ["python", "-m", "nexus.api", "--host", "0.0.0.0", "--port", "8000"]
