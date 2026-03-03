@@ -1,0 +1,218 @@
+# Production Docker Compose configuration for Nexus
+#
+# Usage:
+#   docker-compose -f docker-compose.prod.yml up -d                       # App only
+#   docker-compose -f docker-compose.prod.yml --profile infra up -d       # + Postgres/Redis
+#   docker-compose -f docker-compose.prod.yml --profile monitoring up -d  # + Prometheus/Grafana
+#
+# Scaling workers:
+#   docker-compose -f docker-compose.prod.yml up -d --scale worker=3
+#
+# Note: In Railway, use managed Postgres/Redis instead of the infra profile.
+
+version: "3.8"
+
+services:
+  # ===========================================================================
+  # Application Services
+  # ===========================================================================
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    image: nexus-api:${VERSION:-latest}
+    container_name: nexus-api
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - ENVIRONMENT=production
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LLM_PROVIDER=${LLM_PROVIDER:-mock}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - RATE_LIMIT_PER_MINUTE=${RATE_LIMIT_PER_MINUTE:-60}
+    command: ["python", "-m", "nexus.api", "--host", "0.0.0.0", "--port", "8000"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    mem_limit: 512m
+    mem_reservation: 256m
+    cpus: 1
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - nexus-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    image: nexus-worker:${VERSION:-latest}
+    # container_name omitted to allow --scale flag to work
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - ENVIRONMENT=production
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LLM_PROVIDER=${LLM_PROVIDER:-mock}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - WORKER_COUNT=${WORKER_COUNT:-3}
+      - JOB_TIMEOUT_SECONDS=${JOB_TIMEOUT_SECONDS:-300}
+    command: ["python", "-m", "nexus.worker", "${WORKER_COUNT:-3}"]
+    restart: unless-stopped
+    mem_limit: 1g
+    mem_reservation: 512m
+    cpus: 2
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - nexus-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ===========================================================================
+  # Database Migration (one-shot)
+  # ===========================================================================
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    image: nexus-migrate:${VERSION:-latest}
+    container_name: nexus-migrate
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    networks:
+      - nexus-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ===========================================================================
+  # Infrastructure Services (profile: infra)
+  # For local production testing. In Railway, use managed services instead.
+  # ===========================================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: nexus-postgres-prod
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-nexus}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nexus}
+      POSTGRES_DB: ${POSTGRES_DB:-nexus}
+    volumes:
+      - postgres_prod_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nexus}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    mem_limit: 512m
+    cpus: 1
+    networks:
+      - nexus-network
+    profiles:
+      - infra
+
+  redis:
+    image: redis:7-alpine
+    container_name: nexus-redis-prod
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_prod_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    mem_limit: 256m
+    cpus: 0.5
+    networks:
+      - nexus-network
+    profiles:
+      - infra
+
+  # ===========================================================================
+  # Monitoring Services (profile: monitoring)
+  # ===========================================================================
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    container_name: nexus-prometheus-prod
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_prod_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    mem_limit: 512m
+    cpus: 0.5
+    networks:
+      - nexus-network
+    profiles:
+      - monitoring
+
+  grafana:
+    image: grafana/grafana:10.1.0
+    container_name: nexus-grafana-prod
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=${GRAFANA_URL:-http://localhost:3000}
+    volumes:
+      - grafana_prod_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboard.json:/var/lib/grafana/dashboards/nexus.json:ro
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    mem_limit: 256m
+    cpus: 0.5
+    networks:
+      - nexus-network
+    depends_on:
+      - prometheus
+    profiles:
+      - monitoring
+
+# ===========================================================================
+# Volumes
+# ===========================================================================
+volumes:
+  postgres_prod_data:
+    name: nexus-postgres-prod-data
+  redis_prod_data:
+    name: nexus-redis-prod-data
+  prometheus_prod_data:
+    name: nexus-prometheus-prod-data
+  grafana_prod_data:
+    name: nexus-grafana-prod-data
+
+# ===========================================================================
+# Networks
+# ===========================================================================
+networks:
+  nexus-network:
+    name: nexus-prod-network
+    driver: bridge
