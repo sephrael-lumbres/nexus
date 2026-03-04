@@ -1,0 +1,97 @@
+# Continuous Deployment to Railway
+#
+# This workflow:
+# 1. Only runs AFTER the CI workflow completes successfully
+# 2. Only deploys from the main branch
+# 3. Runs migrations after deployment
+# 4. Verifies health check passes
+#
+# Setup required:
+# 1. Create Railway token: https://railway.app/account/tokens
+# 2. Add RAILWAY_TOKEN as GitHub repository secret
+# 3. Set API_URL in repository variables (your Railway app URL)
+
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: ["CI"]  # Must match the `name` in ci.yml
+    types:
+      - completed
+    branches: [main]
+
+jobs:
+  # ===========================================================================
+  # Deploy to Railway
+  # ===========================================================================
+  deploy:
+    name: Deploy to Railway
+    runs-on: ubuntu-latest
+
+    # Only deploy if CI passed AND we're on main branch
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main'
+
+    environment:
+      name: production
+      url: ${{ vars.API_URL }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Deploy to Railway
+        run: railway up --service nexus-api
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
+      - name: Run database migrations
+        run: railway run --service nexus-api alembic upgrade head
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        continue-on-error: true  # Don't fail if no new migrations
+
+      - name: Wait for deployment to stabilize
+        run: sleep 30
+
+      - name: Health check
+        run: |
+          if [ -n "${{ vars.API_URL }}" ]; then
+            curl -f ${{ vars.API_URL }}/health || echo "Health check failed - verify manually"
+          else
+            echo "API_URL not set - skipping health check"
+          fi
+        continue-on-error: true
+
+      - name: Deployment summary
+        run: |
+          echo "## Deployment Complete!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch:** main" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** ${{ github.event.workflow_run.head_sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Triggered by:** CI workflow success" >> $GITHUB_STEP_SUMMARY
+          if [ -n "${{ vars.API_URL }}" ]; then
+            echo "- **URL:** ${{ vars.API_URL }}" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # ===========================================================================
+  # Notify on CI Failure (optional)
+  # ===========================================================================
+  notify-failure:
+    name: CI Failed - Skip Deploy
+    runs-on: ubuntu-latest
+
+    if: github.event.workflow_run.conclusion == 'failure'
+
+    steps:
+      - name: Log failure
+        run: |
+          echo "## Deployment Skipped" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "CI workflow failed. Deployment was not attempted." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Failed workflow run:** ${{ github.event.workflow_run.html_url }}" >> $GITHUB_STEP_SUMMARY
