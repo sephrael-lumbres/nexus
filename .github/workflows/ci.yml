@@ -93,7 +93,7 @@ jobs:
         env:
           DATABASE_URL: postgresql+asyncpg://nexus:nexus@localhost:5432/nexus
           REDIS_URL: redis://localhost:6379/0
-          ENVIRONMENT: test
+          ENVIRONMENT: testing
           LLM_PROVIDER: mock
         run: pytest tests/ -v --cov=nexus --cov-report=xml --cov-report=term-missing
 

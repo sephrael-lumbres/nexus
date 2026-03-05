@@ -1,7 +1,7 @@
 """Database models and Pydantic schemas for the job queue."""
 
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -23,7 +23,7 @@ from sqlalchemy.orm import DeclarativeBase
 # =============================================================================
 # Enums
 # =============================================================================
-class JobStatus(str, Enum):
+class JobStatus(StrEnum):
     """Possible states for a job in the queue."""
     PENDING = "pending"      # Waiting to be processed
     RUNNING = "running"      # Currently being processed by a worker
@@ -33,7 +33,7 @@ class JobStatus(str, Enum):
     DEAD = "dead"            # Moved to dead letter queue
 
 
-class JobType(str, Enum):
+class JobType(StrEnum):
     """Supported job types."""
     LLM_COMPLETION = "llm.completion"  # Single prompt completion
     LLM_BATCH = "llm.batch"            # Batch of prompts processed concurrently

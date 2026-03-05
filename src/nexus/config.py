@@ -1,19 +1,19 @@
 """Application configuration with environment variable support."""
 
-from enum import Enum
+from enum import StrEnum
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings
 
 
-class Environment(str, Enum):
+class Environment(StrEnum):
     """Application environment."""
     DEVELOPMENT = "development"
     PRODUCTION = "production"
     TESTING = "testing"
 
 
-class LLMProvider(str, Enum):
+class LLMProvider(StrEnum):
     """Supported LLM providers."""
     MOCK = "mock"
     OPENAI = "openai"
