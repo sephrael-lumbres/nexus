@@ -3,6 +3,7 @@
 from enum import StrEnum
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -29,6 +30,20 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str = "postgresql+asyncpg://nexus:nexus@localhost:5432/nexus"
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def ensure_async_driver(cls, v: str) -> str:
+        """Ensure the database URL uses the asyncpg driver.
+
+        Railway set DATABASE_URL with the 'postgresql://' scheme,
+        which makes SQLAlchemy default to psycopg2.
+        'postgresql+asyncpg://' is needed for Nexus' async engine,
+        so this validator rewrites the prefix automatically.
+        """
+        if v.startswith("postgresql://"):
+            v = v.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return v
 
     # Redis
     redis_url: str = "redis://localhost:6379/0"
