@@ -1,0 +1,10 @@
+# Railway deployment configuration for nexus-worker service
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile.prod"
+
+[deploy]
+startCommand = "/bin/sh -c 'python -m nexus.worker $WORKER_COUNT'"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
