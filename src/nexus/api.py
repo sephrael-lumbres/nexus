@@ -16,6 +16,7 @@ Usage:
     uvicorn.run("nexus.api:app", host="0.0.0.0", port=8000)
 """
 
+import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any, cast
@@ -51,6 +52,7 @@ from nexus.models import (
 from nexus.queue import JobQueue, get_queue
 
 logger = structlog.get_logger()
+_start_time = time.time()
 
 # =============================================================================
 # Rate Limiter Setup
@@ -214,9 +216,12 @@ async def health_check() -> HealthResponse:
     - API service
     - Database connection
     - Redis connection
+    - Environment info
+    - Uptime tracking
     """
     db = get_db()
     queue = get_q()
+    settings = get_settings()
 
     db_healthy = await db.health_check()
     redis_healthy = await queue.health_check()
@@ -227,6 +232,9 @@ async def health_check() -> HealthResponse:
         status=overall_status,
         database="connected" if db_healthy else "disconnected",
         redis="connected" if redis_healthy else "disconnected",
+        version="0.1.0",
+        environment=settings.environment.value,
+        uptime_seconds=int(time.time() - _start_time),
     )
 
 

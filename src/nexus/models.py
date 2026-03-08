@@ -292,6 +292,8 @@ class HealthResponse(BaseModel):
     database: str
     redis: str
     version: str = "0.1.0"
+    environment: str = "development"
+    uptime_seconds: int | None = None
 
 
 # =============================================================================
