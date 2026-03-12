@@ -72,6 +72,12 @@ class Settings(BaseSettings):
     # Dead letter queue
     dlq_enabled: bool = True
 
+    # OpenTelemetry
+    otel_enabled: bool = True
+    otel_service_name: str = "nexus"
+    otel_exporter_endpoint: str = "http://localhost:4317"
+    otel_insecure: bool = True
+
     # Pydantic v2 configuration using model_config
     model_config = {
         "env_file": ".env",

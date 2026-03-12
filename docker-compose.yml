@@ -69,6 +69,17 @@ services:
       - ./grafana/dashboard.json:/var/lib/grafana/dashboards/nexus.json:ro
     depends_on:
       - prometheus
+  jaeger:
+    image: jaegertracing/all-in-one:1.54
+    container_name: nexus-jaeger
+    ports:
+      - "16686:16686"   # Jaeger UI (this is what to open in the browser)
+      - "4317:4317"     # OTLP gRPC receiver (this is where Nexus sends spans)
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    depends_on:
+      - redis
+      - postgres
 
   # ==========================================================================
   # Application Services (for full stack deployment)
