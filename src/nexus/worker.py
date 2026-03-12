@@ -34,6 +34,8 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import structlog
+from opentelemetry import context as otel_context
+from opentelemetry import trace
 
 from nexus.config import get_settings
 from nexus.database import Database, JobRepository, get_database
@@ -41,8 +43,10 @@ from nexus.handlers import HandlerResult, get_handler
 from nexus.metrics import get_metrics
 from nexus.models import JobRecord, JobStatus, JobType
 from nexus.queue import JobQueue, get_queue
+from nexus.tracing import get_tracer, init_tracing, shutdown_tracing
 
 logger = structlog.get_logger()
+tracer = get_tracer(__name__)
 
 
 # =============================================================================
@@ -142,119 +146,178 @@ class Worker:
         3. Handles success/failure
         """
         # Wait for job from queue (blocking with timeout)
-        job_id = await self.queue.dequeue(
+        # dequeue now returns (job_id, trace_context) or None
+        result = await self.queue.dequeue(
             timeout=self.settings.poll_interval_seconds
         )
 
-        if job_id is None:
+        if result is None:
             # No job available, loop will retry
             return
 
+        job_id, trace_ctx = result
         self.current_job_id = job_id
 
         try:
-            await self._execute_job(job_id)
+            await self._execute_job(job_id, trace_ctx)
         finally:
             self.current_job_id = None
 
-    async def _execute_job(self, job_id: UUID) -> None:
-        """Execute a single job.
+    async def _execute_job(
+        self, job_id: UUID, trace_ctx: otel_context.Context | None = None,
+    ) -> None:
+        """Execute a single job with distributed tracing.
 
         Args:
             job_id: UUID of the job to execute
+            trace_ctx: Trace context propagated from the API process.
+                       When present, spans become children of the API trace.
         """
-        start_time = time.time()
+        # Use propagated context as parent, or start a fresh trace
+        ctx = trace_ctx if trace_ctx is not None else otel_context.get_current()
 
-        # Session 1: Claim the job
-        async with self.db.session() as session:
-            repo = JobRepository(session)
+        # Root span: all worker-side processing of this job
+        with tracer.start_as_current_span(
+            "worker.process_job",
+            context=ctx,
+            attributes={
+                "job.id": str(job_id),
+                "worker.id": self.worker_id,
+            },
+        ) as job_span:
+            start_time = time.time()
 
-            # Fetch job from database
-            job = await repo.get(job_id)
+            # Span 1: Claim the job (DB Session 1)
+            with tracer.start_as_current_span("worker.claim_job") as claim_span:
+                async with self.db.session() as session:
+                    repo = JobRepository(session)
 
-            if job is None:
-                # Safety net: Give the database 1 chance to catch up before giving up.
-                # With the API fix in place (enqueue job AFTER database commit)
-                # this should never trigger. If it does, something more serious is wrong.
-                self.logger.warning(
-                    "Job not found in database, retrying once",
-                    job_id=str(job_id),
-                )
-                await asyncio.sleep(0.1)
-                job = await repo.get(job_id)
+                    # Fetch job from database
+                    job = await repo.get(job_id)
 
-            if job is None:
-                self.logger.error(
-                    "Job not found in database after retry, discarding",
-                    job_id=str(job_id),
-                )
-                await self.queue.complete(job_id)
-                return
+                    if job is None:
+                        # Safety net: Give the database 1 chance to catch up before giving up.
+                        # With the API fix in place (enqueue job AFTER database commit)
+                        # this should never trigger. If it does, something more serious is wrong.
+                        self.logger.warning(
+                            "Job not found in database, retrying once",
+                            job_id=str(job_id),
+                        )
+                        await asyncio.sleep(0.1)
+                        job = await repo.get(job_id)
 
-            # Check if job was cancelled while in queue
-            if job.status == JobStatus.CANCELLED.value:
-                self.logger.info("Skipping cancelled job", job_id=str(job_id))
-                await self.queue.complete(job_id)
-                return
+                    if job is None:
+                        self.logger.error(
+                            "Job not found in database after retry, discarding",
+                            job_id=str(job_id),
+                        )
+                        claim_span.set_attribute("job.discarded", True)
+                        await self.queue.complete(job_id)
+                        job_span.set_status(trace.StatusCode.ERROR, "Job not found in database")
+                        return
 
-            # Calculate and record job wait time for metrics
-            if job.created_at:
-                wait_seconds = (datetime.now(UTC) - job.created_at).total_seconds()
-                self.metrics.record_job_wait_time(str(job.job_type), wait_seconds)
+                    # Check if job was cancelled while in queue
+                    if job.status == JobStatus.CANCELLED.value:
+                        self.logger.info("Skipping cancelled job", job_id=str(job_id))
+                        claim_span.set_attribute("job.cancelled", True)
+                        await self.queue.complete(job_id)
+                        return
 
-            # Update job to running state
-            job.status = JobStatus.RUNNING.value  # type: ignore[assignment]
-            job.worker_id = self.worker_id        # type: ignore[assignment]
-            job.started_at = datetime.now(UTC)    # type: ignore[assignment]
-            job.attempt += 1                      # type: ignore[assignment]
-            await repo.update(job)
-            # Session commits here and RUNNING job status is now visible
+                    # Calculate and record job wait time for metrics
+                    if job.created_at:
+                        wait_seconds = (datetime.now(UTC) - job.created_at).total_seconds()
+                        self.metrics.record_job_wait_time(str(job.job_type), wait_seconds)
 
-            # Record that this worker has picked up a job
-            self.metrics.record_job_started(
-                job_type=str(job.job_type),
-                worker_id=self.worker_id,
-            )
+                    # Update job to running state
+                    job.status = JobStatus.RUNNING.value  # type: ignore[assignment]
+                    job.worker_id = self.worker_id        # type: ignore[assignment]
+                    job.started_at = datetime.now(UTC)    # type: ignore[assignment]
+                    job.attempt += 1                      # type: ignore[assignment]
+                    await repo.update(job)
+                    # Session commits here and RUNNING job status is now visible
 
-            self.logger.info(
-                "Processing job",
-                job_id=str(job_id),
-                job_type=job.job_type,
-                attempt=job.attempt,
-                max_attempts=job.max_attempts,
-            )
+                    # Record that this worker has picked up a job
+                    self.metrics.record_job_started(
+                        job_type=str(job.job_type),
+                        worker_id=self.worker_id,
+                    )
 
-        # Get and execute handler (outside any session)
-        try:
-            handler = get_handler(JobType(job.job_type))
+                    self.logger.info(
+                        "Processing job",
+                        job_id=str(job_id),
+                        job_type=job.job_type,
+                        attempt=job.attempt,
+                        max_attempts=job.max_attempts,
+                    )
 
-            # Execute with timeout
-            result = await asyncio.wait_for(
-                handler.execute(job),
-                timeout=self.settings.job_timeout_seconds,
-            )
-        except TimeoutError:
-            await self._handle_timeout(repo, job)
-            return
-        except Exception as e:
-            await self._handle_error(repo, job, e)
-            return
+                # Add job metadata to spans now that we've read it from DB
+                claim_span.set_attribute("job.type", str(job.job_type))
+                claim_span.set_attribute("job.attempt", int(job.attempt))
 
-        # Session 2: Record the result
-        async with self.db.session() as session:
-            repo = JobRepository(session)
-            job = await repo.get(job_id)
-            if job is None:
-                self.logger.warning("Job not found when recording result", job_id=str(job_id))
-                return
-            await self._handle_result(repo, job, result)
-            # Session commits here and COMPLETED/FAILED job status is now visible
-            duration_ms = int((time.time() - start_time) * 1000)
-            self.logger.debug(
-                "Job processing complete",
-                job_id=str(job_id),
-                duration_ms=duration_ms,
-            )
+            # Also add job type to the parent span for searchability
+            job_span.set_attribute("job.type", str(job.job_type))
+            job_span.set_attribute("job.attempt", int(job.attempt))
+
+            # Span 2: Execute the handler (outside any session)
+            with tracer.start_as_current_span(
+                "handler.execute",
+                attributes={"job.type": str(job.job_type)},
+            ) as exec_span:
+                try:
+                    handler = get_handler(JobType(str(job.job_type)))
+
+                    # Execute with timeout
+                    result = await asyncio.wait_for(
+                        handler.execute(job),
+                        timeout=self.settings.job_timeout_seconds,
+                    )
+                except TimeoutError:
+                    exec_span.set_status(trace.StatusCode.ERROR, "Job timed out")
+                    await self._handle_timeout(repo, job)
+                    job_span.set_status(trace.StatusCode.ERROR, "Job timed out")
+                    return
+                except Exception as e:
+                    exec_span.set_status(trace.StatusCode.ERROR, str(e))
+                    exec_span.record_exception(e)
+                    await self._handle_error(repo, job, e)
+                    job_span.set_status(trace.StatusCode.ERROR, str(e))
+                    return
+
+            # Span 3: Record the result (DB Session 2)
+            with tracer.start_as_current_span("worker.record_result") as result_span:
+                async with self.db.session() as session:
+                    repo = JobRepository(session)
+                    job = await repo.get(job_id)
+                    if job is None:
+                        self.logger.warning(
+                            "Job not found when recording result",
+                            job_id=str(job_id),
+                        )
+                        result_span.set_status(trace.StatusCode.ERROR, "Job not found")
+                        return
+                    await self._handle_result(repo, job, result)
+                    # Session commits here and COMPLETED/FAILED job status is now visible
+
+                    duration_ms = int((time.time() - start_time) * 1000)
+
+                    result_span.set_attribute("job.success", result.success)
+                    result_span.set_attribute("job.duration_ms", duration_ms)
+
+                    if result.success:
+                        result_span.set_attribute("job.total_tokens", result.total_tokens)
+                        result_span.set_attribute("job.cost_usd", result.cost_usd)
+
+                    self.logger.debug(
+                        "Job processing complete",
+                        job_id=str(job_id),
+                        duration_ms=duration_ms,
+                    )
+
+            # Set final status on the root span
+            if result.success:
+                job_span.set_status(trace.StatusCode.OK)
+            else:
+                job_span.set_status(trace.StatusCode.ERROR, "Job failed")
 
     async def _handle_result(
         self,
@@ -623,6 +686,9 @@ async def run_worker_pool(num_workers: int | None = None) -> None:
     Args:
         num_workers: Number of workers (defaults to settings)
     """
+    # Initialize tracing before creating workers
+    init_tracing(service_name="nexus-worker")
+
     pool = WorkerPool(num_workers)
 
     # Setup signal handlers
@@ -638,6 +704,9 @@ async def run_worker_pool(num_workers: int | None = None) -> None:
     finally:
         if pool._started and not pool._shutdown_event.is_set():
             await pool.stop()
+
+        # Flush pending traces before exit
+        shutdown_tracing()
 
 
 def configure_logging() -> None:

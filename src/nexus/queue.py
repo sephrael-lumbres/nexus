@@ -21,10 +21,13 @@ from uuid import UUID
 
 import redis.asyncio as redis
 import structlog
+from opentelemetry import context, propagate
 
 from nexus.config import get_settings
+from nexus.tracing import get_tracer
 
 logger = structlog.get_logger()
+tracer = get_tracer(__name__)
 
 
 class JobQueue:
@@ -126,12 +129,29 @@ class JobQueue:
 
 
     # =========================================================================
+    # Trace Context Propagation
+    # =========================================================================
+    @staticmethod
+    def _inject_trace_context() -> dict[str, str]:
+        """Capture the current trace context for cross-process propagation."""
+        carrier: dict[str, str] = {}
+        propagate.inject(carrier)
+        return carrier
+
+    @staticmethod
+    def _extract_trace_context(carrier: dict[str, str]) -> context.Context:
+        """Restore trace context received from another process."""
+        return propagate.extract(carrier)
+
+
+    # =========================================================================
     # Core Queue Operations
     # =========================================================================
     async def enqueue(self, job_id: UUID) -> int:
         """Add a job to the pending queue.
 
         Jobs are added to the tail of the list (RPUSH) for FIFO ordering.
+        Trace context is injected into the payload for cross-process propagation.
 
         Args:
             job_id: UUID of the job to enqueue
@@ -144,8 +164,15 @@ class JobQueue:
 
         job_id_str = str(job_id)
 
+        # Bundle job ID with trace context so the worker
+        # can continue the same trace started by the API
+        payload = json.dumps({
+            "job_id": job_id_str,
+            "trace_context": self._inject_trace_context(),
+        })
+
         # Add to pending queue (FIFO: add to tail)
-        queue_length = cast(int, await self.redis.rpush(self.pending_key, job_id_str))  # type: ignore[misc]
+        queue_length = cast(int, await self.redis.rpush(self.pending_key, payload))  # type: ignore[misc]
 
         # Update statistics
         await self.redis.hincrby(self.stats_key, "total_enqueued", 1)  # type: ignore[misc]
@@ -154,7 +181,7 @@ class JobQueue:
 
         return queue_length
 
-    async def dequeue(self, timeout: float = 5.0) -> UUID | None:
+    async def dequeue(self, timeout: float = 5.0) -> tuple[UUID, context.Context | None] | None:
         """Get the next job from the queue (blocking).
 
         Uses BLPOP for efficient blocking wait. The job is moved
@@ -164,7 +191,8 @@ class JobQueue:
             timeout: Maximum seconds to wait for a job (0 = forever)
 
         Returns:
-            UUID of the job if available, None if timeout reached
+            Tuple of (job UUID, trace context) if available, None if timeout reached.
+            Trace context may be None if the enqueuing process had tracing disabled.
         """
         await self._ensure_connected()
         assert self.redis is not None
@@ -176,7 +204,18 @@ class JobQueue:
             return None
 
         # result is (key, value) tuple, ignoring 'key'
-        _, job_id_str = result
+        _, raw_payload = result
+
+        # Parse payload: handle both new JSON format and legacy bare UUID
+        try:
+            payload = json.loads(raw_payload)
+            job_id_str = payload["job_id"]
+            trace_ctx = self._extract_trace_context(payload.get("trace_context", {}))
+        except (json.JSONDecodeError, KeyError):
+            # Legacy format: bare UUID string (backwards compatible)
+            job_id_str = raw_payload
+            trace_ctx = None
+
         job_id = UUID(job_id_str)
 
         # Track in processing set
@@ -187,24 +226,32 @@ class JobQueue:
 
         logger.debug("Job dequeued", job_id=job_id_str)
 
-        return job_id
+        return job_id, trace_ctx
 
-    async def dequeue_nonblocking(self) -> UUID | None:
+    async def dequeue_nonblocking(self) -> tuple[UUID, context.Context | None] | None:
         """Get the next job from the queue (non-blocking).
 
         Returns immediately if no job is available.
 
         Returns:
-            UUID of the job if available, None if queue is empty
+            Tuple of (job UUID, trace context) if available, None if queue is empty
         """
         await self._ensure_connected()
         assert self.redis is not None
 
         # Non-blocking pop
-        job_id_str = await self.redis.lpop(self.pending_key)  # type: ignore[misc]
+        raw_payload = await self.redis.lpop(self.pending_key)  # type: ignore[misc]
 
-        if job_id_str is None:
+        if raw_payload is None:
             return None
+
+        try:
+            payload = json.loads(raw_payload)
+            job_id_str = payload["job_id"]
+            trace_ctx = self._extract_trace_context(payload.get("trace_context", {}))
+        except (json.JSONDecodeError, KeyError):
+            job_id_str = raw_payload
+            trace_ctx = None
 
         job_id = UUID(job_id_str)
 
@@ -216,7 +263,7 @@ class JobQueue:
 
         logger.debug("Job dequeued (non-blocking)", job_id=job_id_str)
 
-        return job_id
+        return job_id, trace_ctx
 
     async def complete(self, job_id: UUID) -> bool:
         """Mark a job as successfully completed.
@@ -293,13 +340,19 @@ class JobQueue:
         # Remove from processing set
         await self.redis.srem(self.processing_key, job_id_str)  # type: ignore[misc]
 
+        # Re-enqueue with current trace context for propagation
+        payload = json.dumps({
+            "job_id": job_id_str,
+            "trace_context": self._inject_trace_context(),
+        })
+
         # Add back to queue
         if to_front:
             # Add to front for faster retry
-            queue_length = cast(int, await self.redis.lpush(self.pending_key, job_id_str))  # type: ignore[misc]
+            queue_length = cast(int, await self.redis.lpush(self.pending_key, payload))  # type: ignore[misc]
         else:
             # Add to back (normal FIFO)
-            queue_length = cast(int, await self.redis.rpush(self.pending_key, job_id_str))  # type: ignore[misc]
+            queue_length = cast(int, await self.redis.rpush(self.pending_key, payload))  # type: ignore[misc]
 
         # Update statistics
         await self.redis.hincrby(self.stats_key, "total_requeued", 1)  # type: ignore[misc]
@@ -717,8 +770,13 @@ async def _test_queue() -> None:
         print(f"[TEST] Peeked jobs: {[str(j)[:8] for j in peeked]}")
 
         # Dequeue a job
-        dequeued = await queue.dequeue_nonblocking()
-        print(f"[TEST] Dequeued: {str(dequeued)[:8] if dequeued else None}")
+        result = await queue.dequeue_nonblocking()
+        if result:
+            dequeued, trace_ctx = result
+            print(f"[TEST] Dequeued: {str(dequeued)[:8]}")
+            print(f"[TEST] Trace context: {'present' if trace_ctx else 'none'}")
+        else:
+            dequeued = None
 
         # Check processing
         processing = await queue.processing_count()
@@ -730,8 +788,9 @@ async def _test_queue() -> None:
             print("[TEST] Completed job")
 
         # Dequeue and fail a job
-        dequeued = await queue.dequeue_nonblocking()
-        if dequeued:
+        result = await queue.dequeue_nonblocking()
+        if result:
+            dequeued, _ = result
             await queue.move_to_dlq(dequeued, error={"msg": "Test error"}, reason="Testing DLQ")
             print("[TEST] Moved job to DLQ")
 
