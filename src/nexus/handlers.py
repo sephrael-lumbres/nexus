@@ -41,8 +41,10 @@ from nexus.providers import (
     LLMProviderError,
     get_provider,
 )
+from nexus.tracing import get_tracer
 
 logger = structlog.get_logger()
+tracer = get_tracer(__name__)
 
 # Temporarily disable all logger methods for clean testing output
 # for level in ["debug", "info", "warning", "error", "critical", "exception"]:
@@ -202,7 +204,7 @@ class CompletionHandler(BaseHandler):
                 max_tokens=input_data.max_tokens,
             )
 
-            # Call LLM provider
+            # Call LLM provider (provider.complete span is created inside the provider)
             response = await self.provider.complete(
                 prompt=input_data.prompt,
                 model=input_data.model,
@@ -313,19 +315,25 @@ class BatchHandler(BaseHandler):
             async def process_item(item: BatchItem) -> dict[str, Any]:
                 """Process a single batch item."""
                 async with semaphore:
-                    response = await self.provider.complete(
-                        prompt=item.prompt,
-                        model=input_data.model,
-                        max_tokens=input_data.max_tokens,
-                        temperature=input_data.temperature,
-                    )
-                    return {
-                        "id": item.id,
-                        "content": response.content,
-                        "input_tokens": response.input_tokens,
-                        "output_tokens": response.output_tokens,
-                        "cost_usd": response.cost_usd,
-                    }
+                    # Each item gets its own span
+                    # These run concurrently so they overlap in Jaeger's timeline view
+                    with tracer.start_as_current_span(
+                        "batch.process_item",
+                        attributes={"batch.item_id": item.id},
+                    ):
+                        response = await self.provider.complete(
+                            prompt=item.prompt,
+                            model=input_data.model,
+                            max_tokens=input_data.max_tokens,
+                            temperature=input_data.temperature,
+                        )
+                        return {
+                            "id": item.id,
+                            "content": response.content,
+                            "input_tokens": response.input_tokens,
+                            "output_tokens": response.output_tokens,
+                            "cost_usd": response.cost_usd,
+                        }
 
             # Execute all items concurrently
             tasks = [process_item(item) for item in input_data.items]

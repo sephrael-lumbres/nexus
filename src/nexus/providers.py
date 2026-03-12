@@ -32,10 +32,13 @@ from typing import Any
 import httpx
 import structlog
 import tiktoken
+from opentelemetry import trace
 
 from nexus.config import LLMProvider, get_settings
+from nexus.tracing import get_tracer
 
 logger = structlog.get_logger()
+tracer = get_tracer(__name__)
 
 
 # =============================================================================
@@ -321,52 +324,70 @@ class MockLLMProvider(BaseLLMProvider):
         Simulates realistic API behavior including latency
         and optional failures for testing retry logic.
         """
-        start_time = time.time()
+        with tracer.start_as_current_span(
+            "provider.complete",
+            attributes={
+                "llm.provider": "mock",
+                "llm.model": model,
+                "llm.max_tokens": max_tokens,
+                "llm.temperature": temperature,
+            },
+        ) as span:
+            start_time = time.time()
 
-        # Simulate API latency
-        latency_ms = random.randint(self.min_latency_ms, self.max_latency_ms)
-        await asyncio.sleep(latency_ms / 1000)
+            # Simulate API latency
+            latency_ms = random.randint(self.min_latency_ms, self.max_latency_ms)
+            await asyncio.sleep(latency_ms / 1000)
 
-        # Simulate random failures if configured
-        if self.failure_rate > 0 and random.random() < self.failure_rate:
-            raise LLMProviderError("Simulated API error for testing")
+            # Simulate random failures if configured
+            if self.failure_rate > 0 and random.random() < self.failure_rate:
+                raise LLMProviderError("Simulated API error for testing")
 
-        # Generate response
-        response_text = self._generate_response(prompt, temperature)
+            # Generate response
+            response_text = self._generate_response(prompt, temperature)
 
-        # Count tokens
-        input_tokens = self.count_tokens(prompt, model)
-        output_tokens = self.count_tokens(response_text, model)
-
-        # Trim response if it exceeds max_tokens (approximate)
-        if output_tokens > max_tokens:
-            # Rough approximation: 1 token ≈ 4 characters
-            char_limit = max_tokens * 4
-            response_text = response_text[:char_limit].rsplit(" ", 1)[0] + "..."
+            # Count tokens
+            input_tokens = self.count_tokens(prompt, model)
             output_tokens = self.count_tokens(response_text, model)
 
-        # Use mock model name
-        mock_model = f"mock-{model}" if not model.startswith("mock-") else model
+            # Trim response if it exceeds max_tokens (approximate)
+            if output_tokens > max_tokens:
+                # Rough approximation: 1 token ≈ 4 characters
+                char_limit = max_tokens * 4
+                response_text = response_text[:char_limit].rsplit(" ", 1)[0] + "..."
+                output_tokens = self.count_tokens(response_text, model)
 
-        duration_ms = int((time.time() - start_time) * 1000)
+            # Use mock model name
+            mock_model = f"mock-{model}" if not model.startswith("mock-") else model
 
-        logger.debug(
-            "Mock completion generated",
-            model=mock_model,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            duration_ms=duration_ms,
-        )
+            duration_ms = int((time.time() - start_time) * 1000)
 
-        return LLMResponse(
-            content=response_text,
-            model=mock_model,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            total_tokens=input_tokens + output_tokens,
-            cost_usd=self.calculate_cost(mock_model, input_tokens, output_tokens),
-            duration_ms=duration_ms,
-        )
+            logger.debug(
+                "Mock completion generated",
+                model=mock_model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                duration_ms=duration_ms,
+            )
+
+            llm_response = LLMResponse(
+                content=response_text,
+                model=mock_model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=input_tokens + output_tokens,
+                cost_usd=self.calculate_cost(mock_model, input_tokens, output_tokens),
+                duration_ms=duration_ms,
+            )
+
+            # Add result metrics to span for Jaeger searchability
+            span.set_attribute("llm.input_tokens", llm_response.input_tokens)
+            span.set_attribute("llm.output_tokens", llm_response.output_tokens)
+            span.set_attribute("llm.total_tokens", llm_response.total_tokens)
+            span.set_attribute("llm.cost_usd", llm_response.cost_usd)
+            span.set_attribute("llm.duration_ms", llm_response.duration_ms)
+
+            return llm_response
 
     def _generate_response(self, prompt: str, temperature: float) -> str:
         """Generate a contextually appropriate response."""
@@ -464,97 +485,119 @@ class OpenAIProvider(BaseLLMProvider):
         Uses the chat completions endpoint with automatic
         retry for transient errors.
         """
-        start_time = time.time()
+        with tracer.start_as_current_span(
+            "provider.complete",
+            attributes={
+                "llm.provider": "openai",
+                "llm.model": model,
+                "llm.max_tokens": max_tokens,
+                "llm.temperature": temperature,
+            },
+        ) as span:
+            start_time = time.time()
 
-        # Build request payload
-        payload = {
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-        }
+            # Build request payload
+            payload = {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            }
 
-        # Retry loop for transient errors
-        last_error: Exception | None = None
-        for attempt in range(self.max_retries):
-            try:
-                response = await self.client.post(
-                    "/chat/completions",
-                    json=payload,
-                )
-
-                # Handle HTTP errors
-                if response.status_code == 401:
-                    raise LLMAuthenticationError("Invalid API key")
-                elif response.status_code == 429:
-                    raise LLMRateLimitError("Rate limit exceeded")
-                elif response.status_code == 400:
-                    error_data = response.json()
-                    raise LLMInvalidRequestError(
-                        error_data.get("error", {}).get("message", "Invalid request")
+            # Retry loop for transient errors
+            last_error: Exception | None = None
+            for attempt in range(self.max_retries):
+                try:
+                    response = await self.client.post(
+                        "/chat/completions",
+                        json=payload,
                     )
-                elif response.status_code >= 500:
-                    # Server error - retry
-                    raise LLMProviderError(f"Server error: {response.status_code}")
 
-                response.raise_for_status()
+                    # Handle HTTP errors
+                    if response.status_code == 401:
+                        raise LLMAuthenticationError("Invalid API key")
+                    elif response.status_code == 429:
+                        raise LLMRateLimitError("Rate limit exceeded")
+                    elif response.status_code == 400:
+                        error_data = response.json()
+                        raise LLMInvalidRequestError(
+                            error_data.get("error", {}).get("message", "Invalid request")
+                        )
+                    elif response.status_code >= 500:
+                        # Server error - retry
+                        raise LLMProviderError(f"Server error: {response.status_code}")
 
-                # Parse response
-                data = response.json()
-                content = data["choices"][0]["message"]["content"]
-                usage = data["usage"]
+                    response.raise_for_status()
 
-                duration_ms = int((time.time() - start_time) * 1000)
+                    # Parse response
+                    data = response.json()
+                    content = data["choices"][0]["message"]["content"]
+                    usage = data["usage"]
 
-                logger.debug(
-                    "OpenAI completion generated",
-                    model=model,
-                    input_tokens=usage["prompt_tokens"],
-                    output_tokens=usage["completion_tokens"],
-                    duration_ms=duration_ms,
-                )
+                    duration_ms = int((time.time() - start_time) * 1000)
 
-                return LLMResponse(
-                    content=content,
-                    model=model,
-                    input_tokens=usage["prompt_tokens"],
-                    output_tokens=usage["completion_tokens"],
-                    total_tokens=usage["total_tokens"],
-                    cost_usd=self.calculate_cost(
-                        model,
-                        usage["prompt_tokens"],
-                        usage["completion_tokens"],
-                    ),
-                    duration_ms=duration_ms,
-                )
+                    logger.debug(
+                        "OpenAI completion generated",
+                        model=model,
+                        input_tokens=usage["prompt_tokens"],
+                        output_tokens=usage["completion_tokens"],
+                        duration_ms=duration_ms,
+                    )
 
-            except (LLMAuthenticationError, LLMInvalidRequestError):
-                # Don't retry auth or validation errors
-                raise
-            except LLMRateLimitError as e:
-                last_error = e
-                # Exponential backoff for rate limits
-                wait_time = (2 ** attempt) + random.random()
-                logger.warning(
-                    "Rate limited, retrying",
-                    attempt=attempt + 1,
-                    wait_seconds=wait_time,
-                )
-                await asyncio.sleep(wait_time)
-            except Exception as e:
-                last_error = e
-                if attempt < self.max_retries - 1:
+                    llm_response = LLMResponse(
+                        content=content,
+                        model=model,
+                        input_tokens=usage["prompt_tokens"],
+                        output_tokens=usage["completion_tokens"],
+                        total_tokens=usage["total_tokens"],
+                        cost_usd=self.calculate_cost(
+                            model,
+                            usage["prompt_tokens"],
+                            usage["completion_tokens"],
+                        ),
+                        duration_ms=duration_ms,
+                    )
+
+                    # Add result attributes to span
+                    span.set_attribute("llm.input_tokens", llm_response.input_tokens)
+                    span.set_attribute("llm.output_tokens", llm_response.output_tokens)
+                    span.set_attribute("llm.total_tokens", llm_response.total_tokens)
+                    span.set_attribute("llm.cost_usd", llm_response.cost_usd)
+                    span.set_attribute("llm.duration_ms", llm_response.duration_ms)
+
+                    return llm_response
+
+                except (LLMAuthenticationError, LLMInvalidRequestError):
+                    # Don't retry auth or validation errors
+                    raise
+                except LLMRateLimitError as e:
+                    last_error = e
+                    span.set_attribute("llm.retry_count", attempt + 1)
+                    # Exponential backoff for rate limits
                     wait_time = (2 ** attempt) + random.random()
                     logger.warning(
-                        "Request failed, retrying",
+                        "Rate limited, retrying",
                         attempt=attempt + 1,
-                        error=str(e),
                         wait_seconds=wait_time,
                     )
                     await asyncio.sleep(wait_time)
+                except Exception as e:
+                    last_error = e
+                    if attempt < self.max_retries - 1:
+                        span.set_attribute("llm.retry_count", attempt + 1)
+                        wait_time = (2 ** attempt) + random.random()
+                        logger.warning(
+                            "Request failed, retrying",
+                            attempt=attempt + 1,
+                            error=str(e),
+                            wait_seconds=wait_time,
+                        )
+                        await asyncio.sleep(wait_time)
 
-        # All retries exhausted
-        raise LLMProviderError(f"Request failed after {self.max_retries} attempts: {last_error}")
+            # All retries exhausted
+            span.set_status(trace.StatusCode.ERROR, str(last_error))
+            span.record_exception(last_error)  # type: ignore[arg-type]
+            raise LLMProviderError(f"Request failed after {self.max_retries} attempts: {last_error}")
 
     async def close(self) -> None:
         """Close the HTTP client."""
