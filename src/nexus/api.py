@@ -26,6 +26,7 @@ import structlog
 from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from pydantic import BaseModel
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -50,9 +51,11 @@ from nexus.models import (
     StatsResponse,
 )
 from nexus.queue import JobQueue, get_queue
+from nexus.tracing import get_tracer, init_tracing, shutdown_tracing
 
 logger = structlog.get_logger()
 _start_time = time.time()
+tracer = get_tracer(__name__)
 
 # =============================================================================
 # Rate Limiter Setup
@@ -68,10 +71,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan handler.
 
     Handles startup and shutdown events:
-    - Startup: Connect to database and queue, start metrics collector
-    - Shutdown: Clean up connections, stop metrics collector
+    - Startup: Initialize tracing, connect to database and queue, start metrics collector
+    - Shutdown: Clean up connections, stop metrics collector, flush traces
     """
     # Startup
+    # Initialize tracing first so database and Redis connections can be traced
+    init_tracing(service_name="nexus-api")
+
     logger.info("Starting Nexus API")
 
     settings = get_settings()
@@ -104,6 +110,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await metrics_collector.stop()
     await queue.disconnect()
     await db.close()
+
+    # Flush pending traces before process exits
+    shutdown_tracing()
+
     logger.info("Nexus API shutdown complete")
 
 
@@ -132,6 +142,12 @@ app.add_middleware(
 
 # Add metrics middleware
 app.add_middleware(MetricsMiddleware)
+
+# Auto-instrument FastAPI for distributed tracing: creates a span for every HTTP request
+FastAPIInstrumentor.instrument_app(
+    app,
+    excluded_urls="health,metrics",
+)
 
 
 # =============================================================================
@@ -303,24 +319,36 @@ async def submit_job(request: Request, job_create: JobCreate) -> JobSubmitRespon
     queue = get_q()
     metrics = get_metrics()
 
-    async with db.session() as session:
-        repo = JobRepository(session)
+    # Create manual span for database write (child of auto-instrumented POST /jobs)
+    with tracer.start_as_current_span("db.create_job") as db_span:
+        db_span.set_attribute("job.type", job_create.job_type.value)
 
-        # Create job record
-        job = JobRecord(
-            job_type=job_create.job_type.value,
-            input_data=job_create.input_data,
-            max_attempts=job_create.max_attempts,
-        )
-        job = await repo.create(job)
-        # Capture job ID, job type, and response before session closes
-        job_id = job.id
-        job_type = job.job_type
-        response = JobSubmitResponse.model_validate(job)
-        # session context manager exits here, DB commit happens now
+        async with db.session() as session:
+            repo = JobRepository(session)
 
-    # Enqueue for processing AFTER commit to ensure DB row is visible to workers
-    await queue.enqueue(cast(UUID, job_id))
+            # Create job record
+            job = JobRecord(
+                job_type=job_create.job_type.value,
+                input_data=job_create.input_data,
+                max_attempts=job_create.max_attempts,
+            )
+            job = await repo.create(job)
+            # Capture job ID, job type, and response before session closes
+            job_id = job.id
+            job_type = job.job_type
+            response = JobSubmitResponse.model_validate(job)
+            # session context manager exits here, DB commit happens now
+
+        # Add job ID after span creation so traces are searchable by job
+        db_span.set_attribute("job.id", str(job_id))
+
+    # Create manual span for Redis enqueue (sibling of db.create_job)
+    with tracer.start_as_current_span("queue.enqueue") as enqueue_span:
+        enqueue_span.set_attribute("job.id", str(job_id))
+        enqueue_span.set_attribute("job.type", str(job_type))
+
+        # Enqueue for processing AFTER commit to ensure DB row is visible to workers
+        await queue.enqueue(cast(UUID, job_id))
 
     # Record metrics
     metrics.record_job_submitted(str(job_type))
