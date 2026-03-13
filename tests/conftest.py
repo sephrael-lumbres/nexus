@@ -7,6 +7,10 @@ This module provides:
 - Async test support
 """
 
+import os
+
+os.environ.setdefault("ENVIRONMENT", "testing")
+
 import asyncio
 from collections.abc import AsyncGenerator, Generator
 

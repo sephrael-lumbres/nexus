@@ -2,6 +2,7 @@
 
 from enum import StrEnum
 from functools import lru_cache
+from typing import Any
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
@@ -77,6 +78,21 @@ class Settings(BaseSettings):
     otel_service_name: str = "nexus"
     otel_exporter_endpoint: str = "http://localhost:4317"
     otel_insecure: bool = True
+
+    @field_validator("otel_enabled", mode="before")
+    @classmethod
+    def disable_otel_in_testing(cls, v: bool, info: Any) -> bool:
+        """Disable tracing in test environment unless explicitly enabled."""
+        # If explicitly set via environment variable, respect that
+        import os
+        if os.environ.get("OTEL_ENABLED") is not None:
+            return v
+
+        # Auto-disable in testing
+        env = info.data.get("environment", Environment.DEVELOPMENT)
+        if env == Environment.TESTING:
+            return False
+        return v
 
     # Pydantic v2 configuration using model_config
     model_config = {
