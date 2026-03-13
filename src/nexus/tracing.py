@@ -55,8 +55,7 @@ def init_tracing(service_name: str | None = None) -> None:
 
     resolved_name = service_name or settings.otel_service_name
 
-    # Resource: metadata attached to all spans (service name, version, env).
-    # Jaeger uses service.name to group traces in its UI.
+    # Resource: metadata attached to all spans (service name, version, env)
     resource = Resource.create(
         {
             "service.name": resolved_name,
@@ -65,22 +64,34 @@ def init_tracing(service_name: str | None = None) -> None:
         }
     )
 
-    # OTLP exporter: sends spans to Jaeger (local) or Grafana Tempo (prod).
-    # Lazy import so grpc is only loaded when tracing is enabled.
-    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
-        OTLPSpanExporter,
-    )
+    # Create OTLP span exporter based on protocol setting.
+    # gRPC for local Jaeger, HTTP for Grafana Cloud.
+    if settings.otel_exporter_protocol == "http":
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+            OTLPSpanExporter,
+        )
 
-    exporter = OTLPSpanExporter(
-        endpoint=settings.otel_exporter_endpoint,
-        insecure=settings.otel_insecure,
-    )
+        # Parse "Key=Value" header format into dict
+        headers = _parse_headers(settings.otel_exporter_headers)
 
-    # BatchSpanProcessor: buffers spans and flushes async on a background thread.
-    # App code never blocks on Jaeger — span creation is microseconds.
+        exporter = OTLPSpanExporter(
+            endpoint=f"{settings.otel_exporter_endpoint}/v1/traces",
+            headers=headers,
+        )
+    else:
+        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
+            OTLPSpanExporter,
+        )
+
+        exporter = OTLPSpanExporter(
+            endpoint=settings.otel_exporter_endpoint,
+            insecure=settings.otel_insecure,
+        )
+
+    # BatchSpanProcessor: buffers spans and flushes async on a background thread
     processor = BatchSpanProcessor(exporter)
 
-    # Register as the global TracerProvider so all get_tracer() calls use it
+    # Register as the global TracerProvider
     provider = TracerProvider(resource=resource)
     provider.add_span_processor(processor)
     trace.set_tracer_provider(provider)
@@ -91,6 +102,7 @@ def init_tracing(service_name: str | None = None) -> None:
         "OpenTelemetry tracing initialized",
         service_name=resolved_name,
         endpoint=settings.otel_exporter_endpoint,
+        protocol=settings.otel_exporter_protocol,
         environment=settings.environment.value,
     )
 
@@ -107,6 +119,30 @@ def get_tracer(name: str) -> trace.Tracer:
         if tracing is disabled or not yet initialized.
     """
     return trace.get_tracer(name)
+
+
+def _parse_headers(headers_str: str) -> dict[str, str]:
+    """Parse 'Key=Value,Key2=Value2' format into a dict.
+
+    Grafana Cloud provides headers in this format:
+        Authorization=Basic <base64 token>
+
+    Args:
+        headers_str: Comma-separated key=value pairs
+
+    Returns:
+        Dict of header name to value
+    """
+    if not headers_str:
+        return {}
+
+    headers = {}
+    for pair in headers_str.split(","):
+        pair = pair.strip()
+        if "=" in pair:
+            key, value = pair.split("=", 1)
+            headers[key.strip()] = value.strip()
+    return headers
 
 
 def shutdown_tracing() -> None:

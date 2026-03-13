@@ -78,6 +78,8 @@ class Settings(BaseSettings):
     otel_service_name: str = "nexus"
     otel_exporter_endpoint: str = "http://localhost:4317"
     otel_insecure: bool = True
+    otel_exporter_protocol: str = "grpc"  # "grpc" for Jaeger, "http" for Grafana Cloud
+    otel_exporter_headers: str = ""       # "Authorization=Basic <token>" for Grafana Cloud
 
     @field_validator("otel_enabled", mode="before")
     @classmethod
