@@ -22,7 +22,7 @@ import structlog
 from opentelemetry import trace
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExporter
 
 from nexus.config import get_settings
 
@@ -66,24 +66,25 @@ def init_tracing(service_name: str | None = None) -> None:
 
     # Create OTLP span exporter based on protocol setting.
     # gRPC for local Jaeger, HTTP for Grafana Cloud.
+    exporter: SpanExporter
     if settings.otel_exporter_protocol == "http":
         from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
-            OTLPSpanExporter,
+            OTLPSpanExporter as HTTPSpanExporter,
         )
 
         # Parse "Key=Value" header format into dict
         headers = _parse_headers(settings.otel_exporter_headers)
 
-        exporter = OTLPSpanExporter(
+        exporter = HTTPSpanExporter(
             endpoint=f"{settings.otel_exporter_endpoint}/v1/traces",
             headers=headers,
         )
     else:
         from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
-            OTLPSpanExporter,
+            OTLPSpanExporter as GRPCSpanExporter,
         )
 
-        exporter = OTLPSpanExporter(
+        exporter = GRPCSpanExporter(
             endpoint=settings.otel_exporter_endpoint,
             insecure=settings.otel_insecure,
         )
