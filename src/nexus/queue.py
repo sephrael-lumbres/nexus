@@ -575,8 +575,18 @@ class JobQueue:
         await self._ensure_connected()
         assert self.redis is not None
 
-        job_ids = await self.redis.lrange(self.pending_key, 0, count - 1)  # type: ignore[misc]
-        return [UUID(job_id) for job_id in job_ids]
+        entries = await self.redis.lrange(self.pending_key, 0, count - 1)  # type: ignore[misc]
+
+        job_ids = []
+        for entry in entries:
+            try:
+                payload = json.loads(entry)
+                job_ids.append(UUID(payload["job_id"]))
+            except (json.JSONDecodeError, KeyError):
+                # Legacy format: bare UUID string
+                job_ids.append(UUID(entry))
+
+        return job_ids
 
 
     # =========================================================================

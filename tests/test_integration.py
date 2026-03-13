@@ -69,7 +69,9 @@ class TestDatabaseQueueIntegration:
             await queue.enqueue(job.id)
 
         # Simulate worker: dequeue
-        dequeued_id = await queue.dequeue_nonblocking()
+        result = await queue.dequeue_nonblocking()
+        assert result is not None
+        dequeued_id, _ = result
         assert dequeued_id == job_id
 
         # Simulate worker: claim job in database

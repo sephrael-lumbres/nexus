@@ -141,8 +141,10 @@ class TestJobQueueDequeue:
         job_id = uuid4()
         await queue.enqueue(job_id)
 
-        dequeued = await queue.dequeue_nonblocking()
+        result = await queue.dequeue_nonblocking()
 
+        assert result is not None
+        dequeued, _ = result
         assert dequeued == job_id
         assert await queue.pending_count() == 0
         assert await queue.processing_count() == 1
@@ -161,8 +163,10 @@ class TestJobQueueDequeue:
         await queue.enqueue(job_id)
 
         # Short timeout since job is already there
-        dequeued = await queue.dequeue(timeout=1.0)
+        result = await queue.dequeue(timeout=1.0)
 
+        assert result is not None
+        dequeued, _ = result
         assert dequeued == job_id
 
     @pytest.mark.asyncio
@@ -184,9 +188,17 @@ class TestJobQueueDequeue:
         await queue.enqueue(job2)
         await queue.enqueue(job3)
 
-        assert await queue.dequeue_nonblocking() == job1
-        assert await queue.dequeue_nonblocking() == job2
-        assert await queue.dequeue_nonblocking() == job3
+        result1 = await queue.dequeue_nonblocking()
+        result2 = await queue.dequeue_nonblocking()
+        result3 = await queue.dequeue_nonblocking()
+
+        assert result1 is not None
+        assert result2 is not None
+        assert result3 is not None
+
+        assert result1[0] == job1
+        assert result2[0] == job2
+        assert result3[0] == job3
 
     @pytest.mark.asyncio
     async def test_dequeue_adds_to_processing(self, queue: JobQueue):
