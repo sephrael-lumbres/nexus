@@ -4,6 +4,7 @@ from enum import StrEnum
 from functools import lru_cache
 from typing import Any
 
+import structlog
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
@@ -122,6 +123,35 @@ def get_settings() -> Settings:
     """
     return Settings()
 
+def configure_logging() -> None:
+    """Configure structured logging for worker and API processes."""
+    import logging
+
+    structlog.configure(
+        processors=[
+            structlog.stdlib.filter_by_level,
+            structlog.stdlib.add_logger_name,
+            structlog.stdlib.add_log_level,
+            structlog.stdlib.PositionalArgumentsFormatter(),
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.StackInfoRenderer(),
+            structlog.processors.format_exc_info,
+            structlog.processors.UnicodeDecoder(),
+            structlog.processors.JSONRenderer(),
+        ],
+        wrapper_class=structlog.stdlib.BoundLogger,
+        context_class=dict,
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        cache_logger_on_first_use=True,
+    )
+
+    # Set log level
+    settings = get_settings()
+    logging.basicConfig(
+        format="%(message)s",
+        level=getattr(logging, settings.log_level.upper()),
+    )
+
 def disable_logging() -> None:
     """Disable all structlog logging for clean module output.
 
@@ -141,8 +171,6 @@ def disable_logging() -> None:
             asyncio.run(_test_my_module())
     """
     import os
-
-    import structlog
 
     structlog.configure(
         processors=[structlog.dev.ConsoleRenderer()],

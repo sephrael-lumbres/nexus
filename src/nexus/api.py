@@ -32,7 +32,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from nexus.config import get_settings
+from nexus.config import configure_logging, get_settings
 from nexus.database import Database, JobRepository, get_database
 from nexus.metrics import (
     MetricsCollector,
@@ -75,6 +75,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     - Shutdown: Clean up connections, stop metrics collector, flush traces
     """
     # Startup
+    configure_logging()
+
     # Initialize tracing first so database and Redis connections can be traced
     init_tracing(service_name="nexus-api")
 
