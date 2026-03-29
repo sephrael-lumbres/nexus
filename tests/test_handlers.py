@@ -73,7 +73,7 @@ class TestCompletionHandler:
     @pytest.fixture
     def provider(self):
         """Get mock provider for testing."""
-        return MockLLMProvider(min_latency_ms=1, max_latency_ms=10)
+        return MockLLMProvider(median_latency_ms=3.0, latency_sigma=0.1, min_latency_ms=1.0)
 
     @pytest.fixture
     def handler(self, provider):
@@ -164,7 +164,7 @@ class TestBatchHandler:
     @pytest.fixture
     def provider(self):
         """Get mock provider for testing."""
-        return MockLLMProvider(min_latency_ms=1, max_latency_ms=10)
+        return MockLLMProvider(median_latency_ms=3.0, latency_sigma=0.1, min_latency_ms=1.0)
 
     @pytest.fixture
     def handler(self, provider):
@@ -266,7 +266,7 @@ class TestBatchHandler:
         )
 
         # Use provider with noticeable latency
-        slow_provider = MockLLMProvider(min_latency_ms=50, max_latency_ms=100)
+        slow_provider = MockLLMProvider(median_latency_ms=70.0, latency_sigma=0.2, min_latency_ms=30.0)
         slow_handler = BatchHandler(provider=slow_provider)
 
         start = time.time()

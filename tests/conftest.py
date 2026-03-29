@@ -136,7 +136,7 @@ def mock_provider() -> MockLLMProvider:
 
     Uses minimal latency for fast tests.
     """
-    return MockLLMProvider(min_latency_ms=1, max_latency_ms=5)
+    return MockLLMProvider(median_latency_ms=3.0, latency_sigma=0.1, min_latency_ms=1.0)
 
 @pytest.fixture
 def failing_provider() -> MockLLMProvider:

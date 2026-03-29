@@ -136,7 +136,7 @@ class TestMockLLMProvider:
     @pytest.mark.asyncio
     async def test_complete_tracks_duration(self):
         """Test that duration is tracked."""
-        provider = MockLLMProvider(min_latency_ms=10, max_latency_ms=50)
+        provider = MockLLMProvider(median_latency_ms=25.0, latency_sigma=0.3, min_latency_ms=10.0)
 
         response = await provider.complete(
             prompt="Test",
@@ -318,12 +318,14 @@ class TestGetProvider:
         """Test passing kwargs to provider."""
         provider = get_provider(
             LLMProvider.MOCK,
-            min_latency_ms=10,
-            max_latency_ms=20,
+            median_latency_ms=15.0,
+            latency_sigma=0.3,
+            min_latency_ms=10.0,
             failure_rate=0.5,
         )
 
         assert isinstance(provider, MockLLMProvider)
-        assert provider.min_latency_ms == 10
-        assert provider.max_latency_ms == 20
+        assert provider.median_latency_ms == 15.0
+        assert provider.latency_sigma == 0.3
+        assert provider.min_latency_ms == 10.0
         assert provider.failure_rate == 0.5

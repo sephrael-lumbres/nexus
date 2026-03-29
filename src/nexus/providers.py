@@ -23,6 +23,7 @@ Usage:
 """
 
 import asyncio
+import math
 import random
 import time
 from abc import ABC, abstractmethod
@@ -297,19 +298,26 @@ class MockLLMProvider(BaseLLMProvider):
 
     def __init__(
         self,
-        min_latency_ms: int = 50,
-        max_latency_ms: int = 200,
+        median_latency_ms: float = 150.0,
+        latency_sigma: float = 0.5,
+        min_latency_ms: float = 20.0,
         failure_rate: float = 0.0,
     ):
         """Initialize mock provider.
 
         Args:
-            min_latency_ms: Minimum simulated latency
-            max_latency_ms: Maximum simulated latency
+            median_latency_ms: Median (P50) simulated latency in ms.
+                Half of requests will be faster, half slower.
+            latency_sigma: Shape of the latency tail. 0.3 = tight
+                and predictable, 0.5 = realistic variance, 0.7+ =
+                heavy tail simulating degraded service.
+            min_latency_ms: Hard floor — no request will be faster
+                than this, regardless of distribution sample.
             failure_rate: Probability of simulated failure (0.0-1.0)
         """
+        self.median_latency_ms = median_latency_ms
+        self.latency_sigma = latency_sigma
         self.min_latency_ms = min_latency_ms
-        self.max_latency_ms = max_latency_ms
         self.failure_rate = failure_rate
 
     async def complete(
@@ -336,7 +344,8 @@ class MockLLMProvider(BaseLLMProvider):
             start_time = time.time()
 
             # Simulate API latency
-            latency_ms = random.randint(self.min_latency_ms, self.max_latency_ms)
+            mu = math.log(self.median_latency_ms)
+            latency_ms = max(self.min_latency_ms, random.lognormvariate(mu, self.latency_sigma))
             await asyncio.sleep(latency_ms / 1000)
 
             # Simulate random failures if configured
