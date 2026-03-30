@@ -10,13 +10,14 @@ This module provides:
 import os
 
 os.environ.setdefault("ENVIRONMENT", "testing")
+os.environ.pop("PROMETHEUS_MULTIPROC_DIR", None)
 
-import asyncio
-from collections.abc import AsyncGenerator, Generator
+from collections.abc import AsyncGenerator
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from prometheus_client import values
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,6 +29,8 @@ from nexus.models import JobRecord, JobStatus, JobType
 from nexus.providers import MockLLMProvider
 from nexus.queue import JobQueue, reset_queue
 from nexus.worker import Worker, WorkerPool
+
+values.ValueClass = values.MutexValue
 
 
 # =============================================================================
@@ -41,22 +44,6 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "integration: marks tests as integration tests"
     )
-
-
-# =============================================================================
-# Event Loop Fixture
-# =============================================================================
-@pytest.fixture(scope="session")
-def event_loop() -> Generator[asyncio.AbstractEventLoop, None, None]:
-    """
-    Create an event loop for the test session.
-
-    This is required for pytest-asyncio to work properly
-    with session-scoped async fixtures.
-    """
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
 
 
 # =============================================================================
