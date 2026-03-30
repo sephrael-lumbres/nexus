@@ -15,6 +15,7 @@ Usage:
 import argparse
 import asyncio
 import json
+import os
 import statistics
 import sys
 import time
@@ -108,19 +109,19 @@ class BenchmarkRunner:
         try:
             response = await self.client.get("/health")
             if response.status_code != 200:
-                print(f"❌ API health check failed: {response.status_code}")
+                print(f"FAIL API health check failed: {response.status_code}")
                 return False
 
             health = response.json()
             if health["status"] != "healthy":
-                print(f"❌ API unhealthy: {health}")
+                print(f"FAIL API unhealthy: {health}")
                 return False
 
-            print(f"✅ API healthy: {health}")
+            print(f"PASS API healthy: {health}")
             return True
 
         except Exception as e:
-            print(f"❌ Cannot connect to API: {e}")
+            print(f"FAIL Cannot connect to API: {e}")
             return False
 
     async def teardown(self):
@@ -136,7 +137,6 @@ class BenchmarkRunner:
         -m nexus.worker). Falls back to the Settings
         default of 3 if not set.
         """
-        import os
         return int(os.environ.get("WORKER_COUNT", 3))
 
     async def run_benchmark(
@@ -164,13 +164,18 @@ class BenchmarkRunner:
 
         # Track metrics
         job_ids: list[str] = []
-        submit_times: dict[str, float] = {}
         completion_times: list[float] = []
         errors: list[str] = []
         total_tokens = 0
         total_cost = 0.0
 
-        # Submit jobs concurrently
+        # Server timestamps for throughput and latency calculation:
+        #   created_at   — when the API inserted the job (pipeline start)
+        #   completed_at — when the worker wrote the final result (pipeline end)
+        # Throughput window: max(completed_at) - min(created_at), free of polling lag.
+        server_created_times: list[datetime] = []
+        server_completed_times: list[datetime] = []
+
         start_time = time.time()
 
         semaphore = asyncio.Semaphore(concurrent)
@@ -178,7 +183,6 @@ class BenchmarkRunner:
         async def submit_job(index: int) -> str | None:
             async with semaphore:
                 payload = self._create_payload(job_type, index)
-                submit_start = time.time()
 
                 # Attempt to submit job up to 5 times total
                 for attempt in range(5):
@@ -187,13 +191,12 @@ class BenchmarkRunner:
 
                         if response.status_code == 201:
                             job_id = response.json()["id"]
-                            submit_times[job_id] = submit_start
                             return job_id
 
                         elif response.status_code == 429:
                             # Exponential backoff: 0.5s, 1s, 2s, 4s, 8s
                             wait = 0.5 * (2 ** attempt)
-                            print(f"\n  ⚠ Rate limited, retrying in {wait:.1f}s "
+                            print(f"\n  Rate limited, retrying in {wait:.1f}s "
                                 f"(attempt {attempt + 1}/5)...")
                             await asyncio.sleep(wait)
                             continue  # retry the loop
@@ -237,8 +240,21 @@ class BenchmarkRunner:
                         status = data["status"]
 
                         if status == "completed":
-                            completion_time = (time.time() - submit_times[job_id]) * 1000
-                            completion_times.append(completion_time)
+                            # Collect timestamps for throughput and latency
+                            raw_created = data.get("created_at")
+                            raw_completed = data.get("completed_at")
+
+                            if raw_created and raw_completed:
+                                created_at = datetime.fromisoformat(raw_created)
+                                completed_at = datetime.fromisoformat(raw_completed)
+
+                                # End-to-end latency: queue wait + worker execution
+                                completion_times.append((completed_at - created_at).total_seconds() * 1000)
+
+                                # Throughput window
+                                server_created_times.append(created_at)
+                                server_completed_times.append(completed_at)
+
                             total_tokens += data.get("total_tokens", 0)
                             total_cost += data.get("cost_usd", 0)
                             pending_ids.discard(job_id)
@@ -251,6 +267,10 @@ class BenchmarkRunner:
                 except Exception as e:
                     errors.append(f"Poll error: {str(e)}")
 
+            # Break immediately when all jobs resolve to avoid an extra sleep
+            if not pending_ids:
+                break
+
             # Progress indicator
             print(".", end="", flush=True)
             await asyncio.sleep(self.config.poll_interval)
@@ -261,18 +281,30 @@ class BenchmarkRunner:
         print(f" {completed}/{len(job_ids)} completed")
 
         # Calculate latency percentiles
+        # quantiles(n=100) returns 99 interpolated cut points.
+        # index 49 = P50, 94 = P95, 98 = P99.
         if completion_times:
-            sorted_times = sorted(completion_times)
-            p50 = sorted_times[int(len(sorted_times) * 0.50)]
-            p95 = sorted_times[int(len(sorted_times) * 0.95)]
-            p99 = sorted_times[int(len(sorted_times) * 0.99)]
-            min_time = min(sorted_times)
-            max_time = max(sorted_times)
+            quantiles = statistics.quantiles(completion_times, n=100)
+            p50 = quantiles[49]
+            p95 = quantiles[94]
+            p99 = quantiles[98]
+            min_time = min(completion_times)
+            max_time = max(completion_times)
         else:
             p50 = p95 = p99 = min_time = max_time = 0
 
         # Calculate throughput
-        throughput = completed / total_duration if total_duration > 0 else 0
+        # Window: max(completed_at) - min(created_at).
+        # Falls back to client wall-clock if server timestamps are unavailable.
+        if server_created_times and server_completed_times:
+            throughput_window = (
+                max(server_completed_times) - min(server_created_times)
+            ).total_seconds()
+            print("  Calculating throughput via server-side timestamps")
+            throughput = completed / throughput_window if throughput_window > 0 else 0
+        else:
+            print("  Server timestamps unavailable, calculating throughput via client wall-clock")
+            throughput = completed / total_duration if total_duration > 0 else 0
 
         result = BenchmarkResult(
             name=name,
@@ -347,7 +379,7 @@ async def run_quick_benchmark(config: BenchmarkConfig) -> list[BenchmarkResult]:
 
     try:
         # Warmup
-        print("\n🔥 Warming up...")
+        print("\nWarming up...")
         await runner.run_benchmark(
             "Warmup",
             job_count=config.warmup_jobs,
@@ -378,7 +410,7 @@ async def run_standard_benchmark(config: BenchmarkConfig) -> list[BenchmarkResul
 
     try:
         # Warmup
-        print("\n🔥 Warming up...")
+        print("\nWarming up...")
         await runner.run_benchmark(
             "Warmup",
             job_count=config.warmup_jobs,
@@ -427,7 +459,7 @@ async def run_full_benchmark(config: BenchmarkConfig) -> list[BenchmarkResult]:
 
     try:
         # Warmup
-        print("\n🔥 Warming up...")
+        print("\nWarming up...")
         await runner.run_benchmark(
             "Warmup",
             job_count=config.warmup_jobs,
@@ -486,8 +518,7 @@ async def run_full_benchmark(config: BenchmarkConfig) -> list[BenchmarkResult]:
 # =============================================================================
 def generate_report(results: list[BenchmarkResult], output_path: Path | None = None):
     """Generate benchmark report."""
-    import os
-    worker_count = int(os.environ.get("WORKER_COUNT", 3))
+    worker_count = results[0].worker_count if results else int(os.environ.get("WORKER_COUNT", 3))
     print("\n" + "=" * 60)
     print("BENCHMARK REPORT")
     print("=" * 60)
@@ -496,8 +527,8 @@ def generate_report(results: list[BenchmarkResult], output_path: Path | None = N
     print()
 
     # Summary table
-    print(f"{'Benchmark':<30} {'Jobs':>8} {'Throughput':>12} {'P50':>10} {'P95':>10} {'Success':>10}")
-    print("-" * 90)
+    print(f"{'Benchmark':<30} {'Jobs':>8} {'Throughput':>12} {'P50':>10} {'P95':>10} {'P99':>10} {'Success':>9}")
+    print("-" * 100)
 
     for result in results:
         success_rate = result.jobs_completed / result.jobs_submitted * 100 if result.jobs_submitted > 0 else 0
@@ -507,10 +538,11 @@ def generate_report(results: list[BenchmarkResult], output_path: Path | None = N
             f"{result.throughput_jobs_per_sec:>10.2f}/s "
             f"{result.latency_p50_ms:>8.1f}ms "
             f"{result.latency_p95_ms:>8.1f}ms "
+            f"{result.latency_p99_ms:>8.1f}ms "
             f"{success_rate:>8.1f}%"
         )
 
-    print("-" * 90)
+    print("-" * 100)
 
     # Aggregate stats
     if results:
@@ -526,7 +558,7 @@ def generate_report(results: list[BenchmarkResult], output_path: Path | None = N
         print(f"  Average P95 Latency:  {avg_p95:.2f}ms")
 
         # Check if we meet targets
-        print("\n🎯 Target Validation:")
+        print("\nTarget Validation:")
         throughput_target = 50  # jobs/sec
         success_target = 99.0  # percent
 
@@ -534,14 +566,14 @@ def generate_report(results: list[BenchmarkResult], output_path: Path | None = N
         overall_success = total_completed / total_jobs * 100 if total_jobs > 0 else 0
 
         if best_throughput >= throughput_target:
-            print(f"  ✅ Throughput: {best_throughput:.2f}/sec >= {throughput_target}/sec target")
+            print(f"  PASS Throughput: {best_throughput:.2f}/sec >= {throughput_target}/sec target")
         else:
-            print(f"  ❌ Throughput: {best_throughput:.2f}/sec < {throughput_target}/sec target")
+            print(f"  FAIL Throughput: {best_throughput:.2f}/sec < {throughput_target}/sec target")
 
         if overall_success >= success_target:
-            print(f"  ✅ Success Rate: {overall_success:.2f}% >= {success_target}% target")
+            print(f"  PASS Success Rate: {overall_success:.2f}% >= {success_target}% target")
         else:
-            print(f"  ❌ Success Rate: {overall_success:.2f}% < {success_target}% target")
+            print(f"  FAIL Success Rate: {overall_success:.2f}% < {success_target}% target")
 
     # Save to file
     if output_path:
@@ -551,7 +583,7 @@ def generate_report(results: list[BenchmarkResult], output_path: Path | None = N
             "results": [r.to_dict() for r in results],
         }
         output_path.write_text(json.dumps(report_data, indent=2))
-        print(f"\n📄 Report saved to: {output_path}")
+        print(f"\nReport saved to: {output_path}")
 
     print("=" * 60)
 
@@ -595,7 +627,7 @@ async def main():
         concurrent_submitters=args.submitters,
     )
 
-    print("🚀 Nexus Benchmark Suite")
+    print("Nexus Benchmark Suite")
     print(f"   URL: {config.base_url}")
     print(f"   Submitters: {config.concurrent_submitters}")
 
@@ -613,11 +645,15 @@ async def main():
         generate_report(results, args.output)
 
         # Exit with error if targets not met
+        total_jobs = sum(r.jobs_submitted for r in results)
+        total_completed = sum(r.jobs_completed for r in results)
         best_throughput = max(r.throughput_jobs_per_sec for r in results)
-        if best_throughput < 50:
+        overall_success = total_completed / total_jobs * 100 if total_jobs > 0 else 0
+
+        if best_throughput < 50 or overall_success < 99.0:
             sys.exit(1)
     else:
-        print("❌ No benchmark results (API may be unavailable)")
+        print("No benchmark results (API may be unavailable)")
         sys.exit(1)
 
 
