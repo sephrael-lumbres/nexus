@@ -38,6 +38,7 @@ echo ""
 # Clear metric files
 echo -e "${YELLOW}4. Clearing metric files...${NC}"
 run_and_echo cd "$NEXUS_DIR"
+run_and_echo mkdir -p /tmp/prometheus_multiproc
 run_and_echo rm -rf /tmp/prometheus_multiproc/*
 run_and_echo ls -la /tmp/prometheus_multiproc/
 echo ""

@@ -77,9 +77,10 @@ services:
       - "4317:4317"     # OTLP gRPC receiver (this is where Nexus sends spans)
     environment:
       - COLLECTOR_OTLP_ENABLED=true
-    depends_on:
-      - redis
-      - postgres
+    command:
+      - "--memory.max-traces=5000"
+    mem_limit: 512m
+    mem_reservation: 256m
 
   # ==========================================================================
   # Application Services (for full stack deployment)
