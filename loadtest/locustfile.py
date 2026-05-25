@@ -29,7 +29,7 @@ import json
 import os
 import random
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -110,6 +110,7 @@ class MetricsCollector:
         self.total_tokens = 0
         self.total_cost = 0.0
         self.completion_times: list[float] = []
+        self.requests_rate_limited: int = 0
 
     def record_submission(self):
         self.jobs_submitted += 1
@@ -125,6 +126,9 @@ class MetricsCollector:
 
     def record_failure(self):
         self.jobs_failed += 1
+
+    def record_rate_limited(self):
+        self.requests_rate_limited += 1
 
     def get_summary(self) -> dict:
         avg_completion_time = (
@@ -143,6 +147,7 @@ class MetricsCollector:
             "total_tokens": self.total_tokens,
             "total_cost_usd": round(self.total_cost, 4),
             "avg_completion_time_ms": round(avg_completion_time, 2),
+            "requests_rate_limited": self.requests_rate_limited,
         }
 
 
@@ -204,7 +209,7 @@ async def get_db_stats(start_time: datetime, end_time: datetime) -> dict:
 def on_test_start(environment, **kwargs):
     """Record test start time."""
     global test_start_time
-    test_start_time = datetime.now()
+    test_start_time = datetime.now(UTC)
     print(f"\n{'=' * 60}")
     print(f"Load test started: {test_start_time.isoformat()}")
     print(f"{'=' * 60}\n")
@@ -214,7 +219,7 @@ def on_test_start(environment, **kwargs):
 def on_test_stop(environment, **kwargs):
     """Print summary and save to JSON when test stops."""
     global test_end_time
-    test_end_time = datetime.now()
+    test_end_time = datetime.now(UTC)
     summary = metrics.get_summary()
     duration = None
 
@@ -269,7 +274,7 @@ def on_test_stop(environment, **kwargs):
     print("=" * 60 + "\n")
 
     # Save to JSON
-    output_dir = Path("loadtest/results/locust")
+    output_dir = Path(f"loadtest/results/locust/{test_config['test_type']}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     timestamp = test_start_time.strftime("%Y-%m-%dT%H:%M:%S")
@@ -318,7 +323,8 @@ class JobSubmitter(HttpUser):
                 response.success()
             elif response.status_code == 429:
                 # Rate limited - expected under load
-                response.failure("Rate limited")
+                metrics.record_rate_limited()
+                response.success()
             else:
                 response.failure(f"Status {response.status_code}")
 
@@ -337,7 +343,8 @@ class JobSubmitter(HttpUser):
                 metrics.record_submission()
                 response.success()
             elif response.status_code == 429:
-                response.failure("Rate limited")
+                metrics.record_rate_limited()
+                response.success()
             else:
                 response.failure(f"Status {response.status_code}")
 
@@ -488,7 +495,8 @@ class MixedUser(HttpUser):
                 metrics.record_submission()
                 response.success()
             elif response.status_code == 429:
-                response.failure("Rate limited")
+                metrics.record_rate_limited()
+                response.success()
             else:
                 response.failure(f"Status {response.status_code}")
 
@@ -511,6 +519,10 @@ class MixedUser(HttpUser):
                 if data["status"] == "completed":
                     metrics.record_completion(data)
                     # Remove from tracking
+                    if job_id in self.submitted_jobs:
+                        self.submitted_jobs.remove(job_id)
+                elif data["status"] in ("failed", "dead"):
+                    metrics.record_failure()
                     if job_id in self.submitted_jobs:
                         self.submitted_jobs.remove(job_id)
                 response.success()
@@ -558,11 +570,12 @@ class StressUser(HttpUser):
             json=payload,
             catch_response=True,
         ) as response:
-            if response.status_code in [200, 201]:
+            if response.status_code == 201:
                 metrics.record_submission()
                 response.success()
             elif response.status_code == 429:
                 # Expected under stress
+                metrics.record_rate_limited()
                 response.success()
             else:
                 response.failure(f"Status {response.status_code}")
