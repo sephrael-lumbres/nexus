@@ -16,7 +16,7 @@ SPAWN_RATE="${SPAWN_RATE:-10}"
 DURATION="${DURATION:-60s}"
 
 # Global variables
-TIMESTAMP=$(date +%Y-%m-%dT%H:%M:%S)
+TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%S)
 LOCUST_RESULTS_DIR="loadtest/results/locust"
 BENCHMARK_RESULTS_DIR="loadtest/results/benchmark"
 
@@ -79,30 +79,35 @@ run_locust() {
     
     case $test_type in
         throughput)
-            TAGS="--tags throughput"
+            USER_CLASS="JobSubmitter"
             ;;
         stress)
-            TAGS="--tags stress"
+            USER_CLASS="StressUser"
             ;;
         endurance)
-            TAGS="--tags endurance"
+            USER_CLASS="EnduranceUser"
             ;;
         *)
-            TAGS=""
+            USER_CLASS=""
             ;;
     esac
 
     # Export TEST_TYPE so locustfile.py can read it
     export TEST_TYPE="${test_type}"
+
+    local LOCUST_RESULTS_FILENAME_PREFIX="${LOCUST_TYPE_DIR}/locust_${test_type}_${TIMESTAMP}"
+    local LOCUST_TYPE_DIR="${LOCUST_RESULTS_DIR}/${test_type}"
+    mkdir -p "${LOCUST_TYPE_DIR}"
     
-    locust -f loadtest/locustfile.py \
+    
+    locust -f loadtest/locustfile.py ${USER_CLASS} \
         --host="${HOST}" \
         --headless \
         -u "${USERS}" \
         -r "${SPAWN_RATE}" \
         -t "${DURATION}" \
-        ${TAGS} \
-        --html="${LOCUST_RESULTS_DIR}/locust_${test_type}_${TIMESTAMP}.html"
+        --html="${LOCUST_RESULTS_FILENAME_PREFIX}.html" \
+        --csv="${LOCUST_RESULTS_FILENAME_PREFIX}"
 
     echo ""
     echo -e "${GREEN}Load test complete${NC}"
@@ -114,30 +119,42 @@ run_locust() {
         echo -e "${YELLOW}Note: ${pending} jobs still pending. Workers are processing...${NC}"
         echo -e "${YELLOW}      Check stats again in a few minutes for final results.${NC}"
     fi
+    
+    # Delete failures/exceptions CSVs if they only contain a header (no actual data)
+    for csv_file in \
+        "${LOCUST_RESULTS_FILENAME_PREFIX}_failures.csv" \
+        "${LOCUST_RESULTS_FILENAME_PREFIX}_exceptions.csv"; do
+        if [ -f "$csv_file" ] && ! tail -n +2 "$csv_file" | grep -q .; then
+            rm -f "$csv_file"
+            echo -e "${YELLOW}Deleted $csv_file since it contained no data.${NC}"
+        fi
+    done
 
     echo ""
     echo -e "${YELLOW}Results saved:${NC}"
-    echo "  JSON: ${LOCUST_RESULTS_DIR}/locust_${test_type}_${TIMESTAMP}.json"
-    echo "  HTML: ${LOCUST_RESULTS_DIR}/locust_${test_type}_${TIMESTAMP}.html"
+    echo "  JSON: ${LOCUST_RESULTS_FILENAME_PREFIX}.json"
+    echo "  HTML: ${LOCUST_RESULTS_FILENAME_PREFIX}.html"
+    echo "   CSV: ${LOCUST_RESULTS_FILENAME_PREFIX}_stats.csv"
 }
 
 run_benchmark() {
     local mode="${1:-standard}"
-    
-    echo ""
+
+    mkdir -p "${BENCHMARK_RESULTS_DIR}/${mode}"
     echo -e "${YELLOW}Running benchmark suite...${NC}"
-    echo "  Mode: ${mode}"
-    echo ""
     
     case $mode in
         quick)
-            python -m loadtest.benchmark --quick --url "${HOST}" --output "${BENCHMARK_RESULTS_DIR}/benchmark_${mode}_${TIMESTAMP}.json"
+            python -m loadtest.benchmark --quick --url "${HOST}" --output "${BENCHMARK_RESULTS_DIR}/${mode}/benchmark_${mode}_${TIMESTAMP}.json"
             ;;
         full)
-            python -m loadtest.benchmark --full --url "${HOST}" --output "${BENCHMARK_RESULTS_DIR}/benchmark_${mode}_${TIMESTAMP}.json"
+            python -m loadtest.benchmark --full --url "${HOST}" --output "${BENCHMARK_RESULTS_DIR}/${mode}/benchmark_${mode}_${TIMESTAMP}.json"
+            ;;
+        compare)
+            python -m loadtest.benchmark --compare --url "${HOST}" --output "${BENCHMARK_RESULTS_DIR}/${mode}/benchmark_${mode}_${TIMESTAMP}.json"
             ;;
         *)
-            python -m loadtest.benchmark --url "${HOST}" --output "${BENCHMARK_RESULTS_DIR}/benchmark_${mode}_${TIMESTAMP}.json"
+            python -m loadtest.benchmark --url "${HOST}" --output "${BENCHMARK_RESULTS_DIR}/${mode}/benchmark_${mode}_${TIMESTAMP}.json"
             ;;
     esac
 }
