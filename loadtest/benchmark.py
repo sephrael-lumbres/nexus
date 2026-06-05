@@ -1,15 +1,17 @@
 """Automated benchmark suite for Nexus job queue.
 
 This script runs a series of benchmarks to measure:
-- Throughput (jobs/sec)
+- Throughput (jobs/sec and prompts/sec)
 - Latency percentiles
 - Queue processing time
 - System limits
+- Batch vs sequential speedup (Nx)
 
 Usage:
     python -m loadtest.benchmark
     python -m loadtest.benchmark --quick
     python -m loadtest.benchmark --full
+    python -m loadtest.benchmark --compare
 """
 
 import argparse
@@ -20,7 +22,7 @@ import statistics
 import sys
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -34,13 +36,18 @@ import httpx
 class BenchmarkConfig:
     """Benchmark configuration."""
     base_url: str = "http://localhost:8000"
-    warmup_jobs: int = 10
     quick_jobs: int = 50
     standard_jobs: int = 200
     full_jobs: int = 500
     concurrent_submitters: int = 10
     poll_interval: float = 0.1
-    poll_timeout: float = 60.0
+    poll_timeout: float = 120.0
+    # Throughput comparison (batch vs sequential) settings.
+    # prompts_per_batch must not exceed BatchHandler.MAX_CONCURRENCY (5).
+    comparison_total_prompts: int = 300        # same prompt count for both conditions
+    comparison_prompts_per_batch: int = 5      # saturates BatchHandler.MAX_CONCURRENCY
+    comparison_trials: int = 5                 # independent repetitions per condition
+    comparison_max_tokens: int = 100           # identical for both job types
 
 
 @dataclass
@@ -61,6 +68,9 @@ class BenchmarkResult:
     total_cost_usd: float = 0.0
     errors: list[str] = field(default_factory=list)
     worker_count: int = 0
+    job_type: str = "llm.completion"
+    prompts_per_job: int = 1
+    throughput_prompts_per_sec: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -72,6 +82,9 @@ class BenchmarkResult:
             "success_rate": round(self.jobs_completed / self.jobs_submitted * 100, 2) if self.jobs_submitted > 0 else 0,
             "total_duration_seconds": round(self.total_duration_seconds, 2),
             "throughput_jobs_per_sec": round(self.throughput_jobs_per_sec, 2),
+            "prompts_per_job": self.prompts_per_job,
+            "throughput_prompts_per_sec": round(self.throughput_prompts_per_sec, 2),
+            "job_type": self.job_type,
             "latency": {
                 "p50_ms": round(self.latency_p50_ms, 2),
                 "p95_ms": round(self.latency_p95_ms, 2),
@@ -82,6 +95,33 @@ class BenchmarkResult:
             "total_tokens": self.total_tokens,
             "total_cost_usd": round(self.total_cost_usd, 6),
             "errors": self.errors[:10],  # First 10 errors
+        }
+
+
+@dataclass
+class ThroughputComparisonResult:
+    """Per-trial results and aggregated statistics for a batch vs sequential comparison."""
+    sequential_trials: list[BenchmarkResult]
+    batch_trials: list[BenchmarkResult]
+    total_prompts: int
+    prompts_per_batch: int
+    sequential_mean_prompts_per_sec: float
+    sequential_stdev_prompts_per_sec: float
+    batch_mean_prompts_per_sec: float
+    batch_stdev_prompts_per_sec: float
+    mean_speedup_nx: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "total_prompts": self.total_prompts,
+            "prompts_per_batch": self.prompts_per_batch,
+            "sequential_mean_prompts_per_sec": round(self.sequential_mean_prompts_per_sec, 2),
+            "sequential_stdev_prompts_per_sec": round(self.sequential_stdev_prompts_per_sec, 2),
+            "batch_mean_prompts_per_sec": round(self.batch_mean_prompts_per_sec, 2),
+            "batch_stdev_prompts_per_sec": round(self.batch_stdev_prompts_per_sec, 2),
+            "mean_speedup_nx": round(self.mean_speedup_nx, 2),
+            "sequential_trials": [r.to_dict() for r in self.sequential_trials],
+            "batch_trials": [r.to_dict() for r in self.batch_trials],
         }
 
 
@@ -139,12 +179,26 @@ class BenchmarkRunner:
         """
         return int(os.environ.get("WORKER_COUNT", 3))
 
+    def _warmup_job_count(self, cycles_per_worker: int = 2) -> int:
+        """Compute warmup job count autoscaling to worker count, with a minimum of 10 warmup jobs."
+
+        Args:
+            cycles_per_worker: Multiplier to establish all DB and Redis connections.
+
+        Returns:
+            The number of warmup jobs needed to cycle each worker.
+        """
+        return max(10, self._get_worker_count() * cycles_per_worker)
+
+
     async def run_benchmark(
         self,
         name: str,
         job_count: int,
         job_type: str = "llm.completion",
         concurrent: int = 10,
+        prompts_per_batch: int = 3,
+        max_tokens: int = 100,
     ) -> BenchmarkResult:
         """Run a single benchmark.
 
@@ -153,11 +207,13 @@ class BenchmarkRunner:
             job_count: Number of jobs to submit
             job_type: Type of job (llm.completion or llm.batch)
             concurrent: Number of concurrent submissions
+            prompts_per_batch: Number of prompts per llm.batch job payload
+            max_tokens: Override payload default of 100
 
         Returns:
             BenchmarkResult with metrics
         """
-        print(f"\n{'='*60}")
+        print(f"{'='*60}")
         print(f"Running: {name}")
         print(f"  Jobs: {job_count}, Concurrent: {concurrent}, Type: {job_type}")
         print(f"{'='*60}")
@@ -182,7 +238,7 @@ class BenchmarkRunner:
 
         async def submit_job(index: int) -> str | None:
             async with semaphore:
-                payload = self._create_payload(job_type, index)
+                payload = self._create_payload(job_type, index, prompts_per_batch, max_tokens)
 
                 # Attempt to submit job up to 5 times total
                 for attempt in range(5):
@@ -283,13 +339,15 @@ class BenchmarkRunner:
         # Calculate latency percentiles
         # quantiles(n=100) returns 99 interpolated cut points.
         # index 49 = P50, 94 = P95, 98 = P99.
-        if completion_times:
+        if len(completion_times) >= 2:
             quantiles = statistics.quantiles(completion_times, n=100)
             p50 = quantiles[49]
             p95 = quantiles[94]
             p99 = quantiles[98]
             min_time = min(completion_times)
             max_time = max(completion_times)
+        elif len(completion_times) == 1:
+            p50 = p95 = p99 = min_time = max_time = completion_times[0]
         else:
             p50 = p95 = p99 = min_time = max_time = 0
 
@@ -305,6 +363,9 @@ class BenchmarkRunner:
         else:
             print("  Server timestamps unavailable, calculating throughput via client wall-clock")
             throughput = completed / total_duration if total_duration > 0 else 0
+
+        # Used to calculate prompts per second throughput
+        prompts_per_job = prompts_per_batch if job_type == "llm.batch" else 1
 
         result = BenchmarkResult(
             name=name,
@@ -322,23 +383,42 @@ class BenchmarkRunner:
             total_cost_usd=total_cost,
             errors=errors,
             worker_count=self._get_worker_count(),
+            job_type=job_type,
+            prompts_per_job=prompts_per_job,
+            throughput_prompts_per_sec=throughput * prompts_per_job,
         )
 
         self._print_result(result)
         return result
 
-    def _create_payload(self, job_type: str, index: int) -> dict[str, Any]:
-        """Create job payload."""
+    def _create_payload(
+        self,
+        job_type: str,
+        index: int,
+        prompts_per_batch: int = 3,
+        max_tokens: int = 100,
+    ) -> dict[str, Any]:
+        """Create job payload.
+
+        Args:
+            job_type: llm.completion or llm.batch
+            index: Job index used to differentiate prompts
+            prompts_per_batch: Number of prompts in an llm.batch payload
+            max_tokens: Override payload default of 100
+        """
         if job_type == "llm.batch":
             return {
                 "job_type": "llm.batch",
                 "input_data": {
                     "items": [
-                        {"id": f"q{i}", "prompt": f"Question {index}-{i}"}
-                        for i in range(3)
+                        {
+                            "id": f"q{i}",
+                            "prompt": f"Benchmark question {index * prompts_per_batch + i}: Explain a technical concept.",
+                        }
+                        for i in range(prompts_per_batch)
                     ],
                     "model": "gpt-4o-mini",
-                    "max_tokens": 50,
+                    "max_tokens": max_tokens,
                 },
             }
         else:
@@ -347,7 +427,7 @@ class BenchmarkRunner:
                 "input_data": {
                     "prompt": f"Benchmark question {index}: Explain a technical concept.",
                     "model": "gpt-4o-mini",
-                    "max_tokens": 100,
+                    "max_tokens": max_tokens,
                 },
             }
 
@@ -358,10 +438,14 @@ class BenchmarkRunner:
         print(f"    Completed:  {result.jobs_completed}")
         print(f"    Failed:     {result.jobs_failed}")
         print(f"    Duration:   {result.total_duration_seconds:.2f}s")
-        print(f"    Throughput: {result.throughput_jobs_per_sec:.2f} jobs/sec")
+        if result.job_type == "llm.batch":
+            print(f"    Prompts/Job: {result.prompts_per_job}")
+            print(f"    Prompt Throughput: {result.throughput_prompts_per_sec:.2f} prompts/sec")
+        print(f"    Job Throughput: {result.throughput_jobs_per_sec:.2f} jobs/sec")
         print(f"    Latency P50: {result.latency_p50_ms:.2f}ms")
         print(f"    Latency P95: {result.latency_p95_ms:.2f}ms")
         print(f"    Latency P99: {result.latency_p99_ms:.2f}ms")
+        print()
         if result.errors:
             print(f"    Errors: {len(result.errors)}")
 
@@ -378,12 +462,12 @@ async def run_quick_benchmark(config: BenchmarkConfig) -> list[BenchmarkResult]:
         return results
 
     try:
-        # Warmup
+        # Warmup: 1 cycle per worker, matches measurement concurrency.
         print("\nWarming up...")
         await runner.run_benchmark(
             "Warmup",
-            job_count=config.warmup_jobs,
-            concurrent=5,
+            job_count=runner._warmup_job_count(cycles_per_worker=1),
+            concurrent=config.concurrent_submitters,
         )
 
         # Quick throughput test
@@ -409,12 +493,12 @@ async def run_standard_benchmark(config: BenchmarkConfig) -> list[BenchmarkResul
         return results
 
     try:
-        # Warmup
+        # Warmup: 2 cycles per worker to match this suite's peak concurrency (High concurrency)
         print("\nWarming up...")
         await runner.run_benchmark(
             "Warmup",
-            job_count=config.warmup_jobs,
-            concurrent=5,
+            job_count=runner._warmup_job_count(cycles_per_worker=2),
+            concurrent=config.concurrent_submitters * 2,
         )
 
         # Completion jobs
@@ -458,12 +542,12 @@ async def run_full_benchmark(config: BenchmarkConfig) -> list[BenchmarkResult]:
         return results
 
     try:
-        # Warmup
+        # Warmup: 3 cycles per worker to match this suite's peak concurrency (Stress Test)
         print("\nWarming up...")
         await runner.run_benchmark(
             "Warmup",
-            job_count=config.warmup_jobs,
-            concurrent=5,
+            job_count=runner._warmup_job_count(cycles_per_worker=3),
+            concurrent=config.concurrent_submitters * 3,
         )
 
         # Baseline
@@ -513,16 +597,182 @@ async def run_full_benchmark(config: BenchmarkConfig) -> list[BenchmarkResult]:
     return results
 
 
+async def run_throughput_comparison(config: BenchmarkConfig) -> ThroughputComparisonResult | None:
+    """Run batch vs sequential throughput comparison.
+
+    Measures prompts/sec for both job types over multiple independent trials
+    using a fixed, normalized prompt count. Returns a ThroughputComparisonResult
+    with per-trial data and aggregated statistics.
+
+    Controlled experiment design:
+    - Same total prompts processed per trial in both conditions
+    - Same prompt template, model, max_tokens, and submitter concurrency
+    - prompts_per_batch set to BatchHandler.MAX_CONCURRENCY to ensure complete saturation
+    - Per-trial warmups keep connection pools hot
+    """
+    runner = BenchmarkRunner(config)
+    total_prompts      = max(config.comparison_total_prompts, runner._get_worker_count() * 100)
+    prompts_per_batch  = config.comparison_prompts_per_batch
+    trials             = config.comparison_trials
+    max_tokens         = config.comparison_max_tokens
+
+    seq_job_count   = total_prompts                       # e.g. 300 jobs × 1 prompt
+    batch_job_count = total_prompts // prompts_per_batch  # e.g.  60 jobs × 5 prompts
+
+    sequential_trials: list[BenchmarkResult] = []
+    batch_trials: list[BenchmarkResult] = []
+
+    if not await runner.setup():
+        return None
+
+    try:
+        # Initial warmup: 2 cycles per worker saturates DB and Redis pools.
+        await runner.run_benchmark(
+            "Initial Warmup",
+            job_count=runner._warmup_job_count(cycles_per_worker=2),
+            job_type="llm.completion",
+            concurrent=config.concurrent_submitters,
+        )
+
+        for trial in range(trials):
+            trial_number = trial + 1
+            print(f"\n{'='*60}")
+            print(f"TRIAL {trial_number} of {trials}")
+            print(f"{'='*60}")
+
+            # Per-trial sequential warmup: 1 cycle per worker re-activates connections.
+            await runner.run_benchmark(
+                f"Warmup Sequential (trial {trial_number})",
+                job_count=runner._warmup_job_count(cycles_per_worker=1),
+                job_type="llm.completion",
+                max_tokens=max_tokens,
+                concurrent=config.concurrent_submitters,
+            )
+
+            seq_result = await runner.run_benchmark(
+                f"Sequential (trial {trial_number})",
+                job_count=seq_job_count,
+                job_type="llm.completion",
+                max_tokens=max_tokens,
+                concurrent=config.concurrent_submitters,
+            )
+            sequential_trials.append(seq_result)
+
+            # Per-trial batch warmup: 1 cycle per worker using the batch handler
+            # path so the asyncio task scheduler and semaphore are pre-exercised.
+            await runner.run_benchmark(
+                f"Warmup Batch (trial {trial_number})",
+                job_count=runner._warmup_job_count(cycles_per_worker=1),
+                job_type="llm.batch",
+                prompts_per_batch=prompts_per_batch,
+                max_tokens=max_tokens,
+                concurrent=config.concurrent_submitters,
+            )
+
+            batch_result = await runner.run_benchmark(
+                f"Batch (trial {trial_number})",
+                job_count=batch_job_count,
+                job_type="llm.batch",
+                prompts_per_batch=prompts_per_batch,
+                max_tokens=max_tokens,
+                concurrent=config.concurrent_submitters,
+            )
+            batch_trials.append(batch_result)
+
+    finally:
+        await runner.teardown()
+
+    seq_pps   = [r.throughput_prompts_per_sec for r in sequential_trials]
+    batch_pps = [r.throughput_prompts_per_sec for r in batch_trials]
+
+    # stdev requires at least 2 samples; falls back to 0.0 for a single trial.
+    mean_seq    = statistics.mean(seq_pps)
+    mean_batch  = statistics.mean(batch_pps)
+    stdev_seq   = statistics.stdev(seq_pps)   if len(seq_pps)   >= 2 else 0.0
+    stdev_batch = statistics.stdev(batch_pps) if len(batch_pps) >= 2 else 0.0
+    mean_nx     = mean_batch / mean_seq if mean_seq > 0 else 0.0
+
+    return ThroughputComparisonResult(
+        sequential_trials=sequential_trials,
+        batch_trials=batch_trials,
+        total_prompts=total_prompts,
+        prompts_per_batch=prompts_per_batch,
+        sequential_mean_prompts_per_sec=mean_seq,
+        sequential_stdev_prompts_per_sec=stdev_seq,
+        batch_mean_prompts_per_sec=mean_batch,
+        batch_stdev_prompts_per_sec=stdev_batch,
+        mean_speedup_nx=mean_nx,
+    )
+
+
+def generate_comparison_report(comparison: ThroughputComparisonResult, output_path: Path | None = None):
+    """Generate throughput comparison report (batch vs sequential)."""
+    worker_count = (
+        comparison.sequential_trials[0].worker_count
+        if comparison.sequential_trials
+        else int(os.environ.get("WORKER_COUNT", 3))
+    )
+    generated_at = datetime.now(UTC).isoformat()
+
+    print("\n" + "=" * 60)
+    print("THROUGHPUT COMPARISON REPORT (Batch vs Sequential)")
+    print("=" * 60)
+    print(f"Generated:      {generated_at}")
+    print(f"Nexus Workers:  {worker_count}")
+    print(f"Trials:         {len(comparison.sequential_trials)}")
+    print(f"Total Prompts:  {comparison.total_prompts} per trial")
+    print(f"Prompts/Batch:  {comparison.prompts_per_batch}")
+    print()
+
+    # Per-trial table
+    print(f"{'Trial':<8} {'Sequential (prompts/s)':>24} {'Batch (prompts/s)':>20} {'Nx':>9}")
+    print("-" * 64)
+
+    for i, (s, b) in enumerate(
+        zip(comparison.sequential_trials, comparison.batch_trials), 1
+    ):
+        nx = (
+            b.throughput_prompts_per_sec / s.throughput_prompts_per_sec
+            if s.throughput_prompts_per_sec > 0 else 0
+        )
+        print(
+            f"{i:<8} "
+            f"{s.throughput_prompts_per_sec:>24.2f} "
+            f"{b.throughput_prompts_per_sec:>20.2f} "
+            f"{nx:>8.2f}x"
+        )
+
+    print("-" * 64)
+
+    print(f"\nSummary (mean ± stdev over {len(comparison.sequential_trials)} trials):")
+    print(f"  Sequential: {comparison.sequential_mean_prompts_per_sec:.2f} ± {comparison.sequential_stdev_prompts_per_sec:.2f} prompts/sec")
+    print(f"  Batch:      {comparison.batch_mean_prompts_per_sec:.2f} ± {comparison.batch_stdev_prompts_per_sec:.2f} prompts/sec")
+    print(f"  Speedup Nx: {comparison.mean_speedup_nx:.2f}x")
+
+    if output_path:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps({
+            "generated_at": generated_at,
+            "worker_count": worker_count,
+            "mode": "throughput_comparison",
+            **comparison.to_dict(),
+        }, indent=2))
+        print(f"\nReport saved to: {output_path}")
+
+    print("=" * 60)
+
+
 # =============================================================================
 # Report Generation
 # =============================================================================
 def generate_report(results: list[BenchmarkResult], output_path: Path | None = None):
     """Generate benchmark report."""
     worker_count = results[0].worker_count if results else int(os.environ.get("WORKER_COUNT", 3))
+    generated_at = datetime.now(UTC).isoformat()
     print("\n" + "=" * 60)
     print("BENCHMARK REPORT")
     print("=" * 60)
-    print(f"Generated: {datetime.now().isoformat()}")
+    print(f"Generated: {generated_at}")
     print(f"Nexus Workers: {worker_count}")
     print()
 
@@ -577,8 +827,9 @@ def generate_report(results: list[BenchmarkResult], output_path: Path | None = N
 
     # Save to file
     if output_path:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         report_data = {
-            "generated_at": datetime.now().isoformat(),
+            "generated_at": generated_at,
             "worker_count": worker_count,
             "results": [r.to_dict() for r in results],
         }
@@ -604,6 +855,11 @@ async def main():
         help="Run full benchmark suite",
     )
     parser.add_argument(
+        "--compare",
+        action="store_true",
+        help="Run batch vs sequential throughput comparison",
+    )
+    parser.add_argument(
         "--url",
         default="http://localhost:8000",
         help="API base URL",
@@ -621,6 +877,7 @@ async def main():
     )
 
     args = parser.parse_args()
+    worker_count = int(os.environ.get("WORKER_COUNT", 3))
 
     config = BenchmarkConfig(
         base_url=args.url,
@@ -630,6 +887,10 @@ async def main():
     print("Nexus Benchmark Suite")
     print(f"   URL: {config.base_url}")
     print(f"   Submitters: {config.concurrent_submitters}")
+    print(f"   Workers: {worker_count}")
+
+    results: list[BenchmarkResult] = []
+    comparison: ThroughputComparisonResult | None = None
 
     if args.quick:
         print("   Mode: Quick")
@@ -637,19 +898,31 @@ async def main():
     elif args.full:
         print("   Mode: Full")
         results = await run_full_benchmark(config)
+    elif args.compare:
+        total_prompts = max(config.comparison_total_prompts, worker_count * 100)
+        print("   Mode:          Throughput Comparison (Batch vs Sequential)")
+        print(f"   Trials:        {config.comparison_trials}")
+        print(f"   Total Prompts: {total_prompts} per trial")
+        print(f"   Prompts/Batch: {config.comparison_prompts_per_batch}")
+        comparison = await run_throughput_comparison(config)
     else:
         print("   Mode: Standard")
         results = await run_standard_benchmark(config)
 
-    if results:
-        generate_report(results, args.output)
+    if comparison:
+        generate_comparison_report(comparison, args.output)
 
-        # Exit with error if targets not met
+        if comparison.mean_speedup_nx < 1.0:
+            print("\nFAIL Batch is slower than sequential")
+            sys.exit(1)
+    elif results:
+        generate_report(results, args.output)
         total_jobs = sum(r.jobs_submitted for r in results)
         total_completed = sum(r.jobs_completed for r in results)
         best_throughput = max(r.throughput_jobs_per_sec for r in results)
         overall_success = total_completed / total_jobs * 100 if total_jobs > 0 else 0
 
+        # Exit with error if targets not met
         if best_throughput < 50 or overall_success < 99.0:
             sys.exit(1)
     else:
