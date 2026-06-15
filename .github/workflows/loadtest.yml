@@ -7,7 +7,7 @@ on:
       test_type:
         description: 'Test type (quick, standard, full)'
         required: true
-        default: 'standard'
+        default: 'quick'
         type: choice
         options:
           - quick
@@ -98,7 +98,7 @@ jobs:
       
       - name: Run Benchmark
         env:
-          TEST_TYPE: ${{ github.event.inputs.test_type || 'standard' }}
+          TEST_TYPE: ${{ github.event.inputs.test_type || 'quick' }}
           WORKER_COUNT: 10
         run: |
           TIMESTAMP=$(date +%Y-%m-%dT%H-%M-%S)
@@ -134,7 +134,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: loadtest-results-${{ github.event.inputs.test_type || 'standard' }}-run${{ github.run_number }}
+          name: loadtest-results-${{ github.event.inputs.test_type || 'quick' }}-run${{ github.run_number }}
           path: loadtest/results/
           retention-days: 90
       

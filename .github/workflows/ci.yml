@@ -149,3 +149,118 @@ jobs:
           severity: "CRITICAL,HIGH"
           exit-code: "0"  # Don't fail on vulnerabilities for now (review manually)
           format: "table"
+
+  # ===========================================================================
+  # Performance Regression Gate
+  # ===========================================================================
+  benchmark:
+    name: Performance Regression Gate
+    runs-on: ubuntu-latest
+    needs: [lint, test]        # Only run if correctness checks pass
+    if: github.ref == 'refs/heads/main'  # Only on pushes to main, not PRs
+
+    timeout-minutes: 10
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: nexus
+          POSTGRES_PASSWORD: nexus
+          POSTGRES_DB: nexus
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run database migrations
+        env:
+          DATABASE_URL: postgresql+asyncpg://nexus:nexus@localhost:5432/nexus
+        run: alembic upgrade head
+
+      - name: Start API
+        env:
+          DATABASE_URL: postgresql+asyncpg://nexus:nexus@localhost:5432/nexus
+          REDIS_URL: redis://localhost:6379/0
+          LLM_PROVIDER: mock
+          RATE_LIMIT_PER_MINUTE: 10000
+        run: |
+          python -m nexus.api &
+          for i in {1..30}; do
+            if curl -sf http://localhost:8000/health | grep -q "healthy"; then
+              echo "API healthy after ${i} attempts"
+              break
+            fi
+            echo "Waiting for API... ($i/30)"
+            sleep 2
+          done
+
+      - name: Start workers
+        env:
+          DATABASE_URL: postgresql+asyncpg://nexus:nexus@localhost:5432/nexus
+          REDIS_URL: redis://localhost:6379/0
+          LLM_PROVIDER: mock
+          WORKER_COUNT: 10
+        run: |
+          python -m nexus.worker &
+          sleep 5
+
+      - name: Run quick benchmark
+        env:
+          DATABASE_URL: postgresql+asyncpg://nexus:nexus@localhost:5432/nexus
+          REDIS_URL: redis://localhost:6379/0
+          LLM_PROVIDER: mock
+        run: |
+          mkdir -p /tmp/benchmark
+          python -m loadtest.benchmark --quick \
+            --output /tmp/benchmark/result.json
+
+      - name: Check throughput threshold
+        run: |
+          THROUGHPUT=$(jq '.results[-1].throughput_jobs_per_sec' \
+            /tmp/benchmark/result.json)
+
+          echo "Throughput : $THROUGHPUT jobs/sec"
+          echo "Threshold  : 50 jobs/sec"
+
+          if (( $(echo "$THROUGHPUT < 50" | bc -l) )); then
+            echo ""
+            echo "FAIL: Performance regression detected."
+            echo "Expected >= 50 jobs/sec, got $THROUGHPUT jobs/sec"
+            exit 1
+          fi
+
+          echo "PASS: Throughput meets threshold."
+
+      - name: Upload benchmark result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-gate-run${{ github.run_number }}
+          path: /tmp/benchmark/result.json
+          retention-days: 30
