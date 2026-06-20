@@ -107,9 +107,13 @@ class ThroughputComparisonResult:
     prompts_per_batch: int
     sequential_mean_prompts_per_sec: float
     sequential_stdev_prompts_per_sec: float
+    sequential_cv_pct: float
     batch_mean_prompts_per_sec: float
     batch_stdev_prompts_per_sec: float
+    batch_cv_pct: float
     mean_speedup_nx: float
+    stdev_speedup_nx: float
+    speedup_cv_pct: float
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -117,9 +121,13 @@ class ThroughputComparisonResult:
             "prompts_per_batch": self.prompts_per_batch,
             "sequential_mean_prompts_per_sec": round(self.sequential_mean_prompts_per_sec, 2),
             "sequential_stdev_prompts_per_sec": round(self.sequential_stdev_prompts_per_sec, 2),
+            "sequential_cv_pct": round(self.sequential_cv_pct, 2),
             "batch_mean_prompts_per_sec": round(self.batch_mean_prompts_per_sec, 2),
             "batch_stdev_prompts_per_sec": round(self.batch_stdev_prompts_per_sec, 2),
+            "batch_cv_pct": round(self.batch_cv_pct, 2),
             "mean_speedup_nx": round(self.mean_speedup_nx, 2),
+            "stdev_speedup_nx": round(self.stdev_speedup_nx, 2),
+            "speedup_cv_pct": round(self.speedup_cv_pct, 2),
             "sequential_trials": [r.to_dict() for r in self.sequential_trials],
             "batch_trials": [r.to_dict() for r in self.batch_trials],
         }
@@ -626,11 +634,20 @@ async def run_throughput_comparison(config: BenchmarkConfig) -> ThroughputCompar
         return None
 
     try:
-        # Initial warmup: 2 cycles per worker saturates DB and Redis pools.
+        # Initial warmup: 1 cycle per worker, per job type saturates DB and Redis pools.
         await runner.run_benchmark(
-            "Initial Warmup",
-            job_count=runner._warmup_job_count(cycles_per_worker=2),
+            "Initial Warmup (sequential)",
+            job_count=runner._warmup_job_count(cycles_per_worker=1),
             job_type="llm.completion",
+            concurrent=config.concurrent_submitters,
+        )
+
+        await runner.run_benchmark(
+            "Initial Warmup (batch)",
+            job_count=runner._warmup_job_count(cycles_per_worker=1),
+            job_type="llm.batch",
+            prompts_per_batch=prompts_per_batch,
+            max_tokens=max_tokens,
             concurrent=config.concurrent_submitters,
         )
 
@@ -685,12 +702,25 @@ async def run_throughput_comparison(config: BenchmarkConfig) -> ThroughputCompar
     seq_pps   = [r.throughput_prompts_per_sec for r in sequential_trials]
     batch_pps = [r.throughput_prompts_per_sec for r in batch_trials]
 
+    # Per-trial speedup ratios (one per trial, not mean-of-means)
+    nx_values = [
+        b / s for s, b in zip(seq_pps, batch_pps) if s > 0
+    ]
+
     # stdev requires at least 2 samples; falls back to 0.0 for a single trial.
     mean_seq    = statistics.mean(seq_pps)
     mean_batch  = statistics.mean(batch_pps)
     stdev_seq   = statistics.stdev(seq_pps)   if len(seq_pps)   >= 2 else 0.0
     stdev_batch = statistics.stdev(batch_pps) if len(batch_pps) >= 2 else 0.0
-    mean_nx     = mean_batch / mean_seq if mean_seq > 0 else 0.0
+
+    # CV = (stdev / mean) × 100% — dimensionless, comparable across configurations
+    cv_seq   = (stdev_seq   / mean_seq)   * 100 if mean_seq   > 0 else 0.0
+    cv_batch = (stdev_batch / mean_batch) * 100 if mean_batch > 0 else 0.0
+
+    # Speedup ratio statistics (variance OF the ratio, not just mean ratio)
+    mean_nx  = statistics.mean(nx_values) if nx_values else 0.0
+    stdev_nx = statistics.stdev(nx_values) if len(nx_values) >= 2 else 0.0
+    cv_nx    = (stdev_nx / mean_nx) * 100 if mean_nx > 0 else 0.0
 
     return ThroughputComparisonResult(
         sequential_trials=sequential_trials,
@@ -699,9 +729,13 @@ async def run_throughput_comparison(config: BenchmarkConfig) -> ThroughputCompar
         prompts_per_batch=prompts_per_batch,
         sequential_mean_prompts_per_sec=mean_seq,
         sequential_stdev_prompts_per_sec=stdev_seq,
+        sequential_cv_pct=cv_seq,
         batch_mean_prompts_per_sec=mean_batch,
         batch_stdev_prompts_per_sec=stdev_batch,
+        batch_cv_pct=cv_batch,
         mean_speedup_nx=mean_nx,
+        stdev_speedup_nx=stdev_nx,
+        speedup_cv_pct=cv_nx,
     )
 
 
@@ -745,9 +779,17 @@ def generate_comparison_report(comparison: ThroughputComparisonResult, output_pa
     print("-" * 64)
 
     print(f"\nSummary (mean ± stdev over {len(comparison.sequential_trials)} trials):")
-    print(f"  Sequential: {comparison.sequential_mean_prompts_per_sec:.2f} ± {comparison.sequential_stdev_prompts_per_sec:.2f} prompts/sec")
-    print(f"  Batch:      {comparison.batch_mean_prompts_per_sec:.2f} ± {comparison.batch_stdev_prompts_per_sec:.2f} prompts/sec")
-    print(f"  Speedup Nx: {comparison.mean_speedup_nx:.2f}x")
+    print(f"  Sequential: {comparison.sequential_mean_prompts_per_sec:.2f} ± "
+        f"{comparison.sequential_stdev_prompts_per_sec:.2f} prompts/sec "
+        f"(CV: {comparison.sequential_cv_pct:.2f}%)")
+
+    print(f"  Batch:      {comparison.batch_mean_prompts_per_sec:.2f} ± "
+        f"{comparison.batch_stdev_prompts_per_sec:.2f} prompts/sec "
+        f"(CV: {comparison.batch_cv_pct:.2f}%)")
+
+    print(f"  Speedup Nx: {comparison.mean_speedup_nx:.2f}x ± "
+        f"{comparison.stdev_speedup_nx:.2f}x "
+        f"(CV: {comparison.speedup_cv_pct:.2f}%)")
 
     if output_path:
         output_path.parent.mkdir(parents=True, exist_ok=True)
