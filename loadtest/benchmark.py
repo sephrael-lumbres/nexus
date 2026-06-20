@@ -39,6 +39,7 @@ class BenchmarkConfig:
     quick_jobs: int = 50
     standard_jobs: int = 200
     full_jobs: int = 500
+    ci_jobs: int = 500
     concurrent_submitters: int = 10
     poll_interval: float = 0.1
     poll_timeout: float = 120.0
@@ -605,6 +606,35 @@ async def run_full_benchmark(config: BenchmarkConfig) -> list[BenchmarkResult]:
     return results
 
 
+async def run_ci_benchmark(config: BenchmarkConfig) -> list[BenchmarkResult]:
+    """Run CI regression-gate benchmark."""
+    runner = BenchmarkRunner(config)
+    results = []
+
+    if not await runner.setup():
+        return results
+
+    try:
+        print("\nWarming up...")
+        await runner.run_benchmark(
+            "Warmup",
+            job_count=runner._warmup_job_count(cycles_per_worker=2),
+            concurrent=config.concurrent_submitters,
+        )
+
+        result = await runner.run_benchmark(
+            "CI Throughput",
+            job_count=config.ci_jobs,
+            concurrent=config.concurrent_submitters,
+        )
+        results.append(result)
+
+    finally:
+        await runner.teardown()
+
+    return results
+
+
 async def run_throughput_comparison(config: BenchmarkConfig) -> ThroughputComparisonResult | None:
     """Run batch vs sequential throughput comparison.
 
@@ -897,6 +927,11 @@ async def main():
         help="Run full benchmark suite",
     )
     parser.add_argument(
+        "--ci",
+        action="store_true",
+        help="Run CI regression-gate benchmark",
+    )
+    parser.add_argument(
         "--compare",
         action="store_true",
         help="Run batch vs sequential throughput comparison",
@@ -940,6 +975,9 @@ async def main():
     elif args.full:
         print("   Mode: Full")
         results = await run_full_benchmark(config)
+    elif args.ci:
+        print("   Mode: CI")
+        results = await run_ci_benchmark(config)
     elif args.compare:
         total_prompts = max(config.comparison_total_prompts, worker_count * 100)
         print("   Mode:          Throughput Comparison (Batch vs Sequential)")

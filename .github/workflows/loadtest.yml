@@ -7,12 +7,13 @@ on:
       test_type:
         description: 'Test type (quick, standard, full)'
         required: true
-        default: 'quick'
+        default: 'ci'
         type: choice
         options:
           - quick
           - standard
           - full
+          - ci
   
   # Run weekly on Sunday 2 AM UTC
   schedule:
@@ -98,7 +99,7 @@ jobs:
       
       - name: Run Benchmark
         env:
-          TEST_TYPE: ${{ github.event.inputs.test_type || 'quick' }}
+          TEST_TYPE: ${{ github.event.inputs.test_type || 'ci' }}
           WORKER_COUNT: 10
         run: |
           TIMESTAMP=$(date +%Y-%m-%dT%H-%M-%S)
@@ -112,6 +113,9 @@ jobs:
               ;;
             full)
               FLAG="--full"
+              ;;
+            ci)
+              FLAG="--ci"
               ;;
             standard)
               FLAG=""  # No flag for standard (it's the default)
@@ -134,7 +138,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: loadtest-results-${{ github.event.inputs.test_type || 'quick' }}-run${{ github.run_number }}
+          name: loadtest-results-${{ github.event.inputs.test_type || 'ci' }}-run${{ github.run_number }}
           path: loadtest/results/
           retention-days: 90
       

@@ -230,14 +230,14 @@ jobs:
           python -m nexus.worker &
           sleep 5
 
-      - name: Run quick benchmark
+      - name: Run benchmark
         env:
           DATABASE_URL: postgresql+asyncpg://nexus:nexus@localhost:5432/nexus
           REDIS_URL: redis://localhost:6379/0
           LLM_PROVIDER: mock
         run: |
           mkdir -p /tmp/benchmark
-          python -m loadtest.benchmark --quick \
+          python -m loadtest.benchmark --ci \
             --output /tmp/benchmark/result.json
 
       - name: Check throughput threshold

@@ -150,6 +150,9 @@ run_benchmark() {
         full)
             python -m loadtest.benchmark --full --url "${HOST}" --output "${BENCHMARK_RESULTS_DIR}/${mode}/benchmark_${mode}_${TIMESTAMP}.json"
             ;;
+        ci)
+            python -m loadtest.benchmark --ci --url "${HOST}" --output "${BENCHMARK_RESULTS_DIR}/${mode}/benchmark_${mode}_${TIMESTAMP}.json"
+            ;;
         compare)
             python -m loadtest.benchmark --compare --url "${HOST}" --output "${BENCHMARK_RESULTS_DIR}/${mode}/benchmark_${mode}_${TIMESTAMP}.json"
             ;;
@@ -189,7 +192,8 @@ case $COMMAND in
         # CI mode: quick tests for CI/CD pipelines
         echo -e "${YELLOW}Running CI test suite...${NC}"
         check_health || exit 1
-        run_benchmark "quick"
+        check_workers || exit 1
+        run_benchmark "ci"
         ;;
     
     help|*)
