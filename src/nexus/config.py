@@ -32,6 +32,8 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str = "postgresql+asyncpg://nexus:nexus@localhost:5432/nexus"
+    db_pool_size: int = 10
+    db_max_overflow: int = 20
 
     @field_validator("database_url", mode="before")
     @classmethod

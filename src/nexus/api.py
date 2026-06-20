@@ -103,6 +103,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         "Nexus API started",
         environment=settings.environment.value,
         rate_limit=f"{settings.rate_limit_per_minute}/minute",
+        db_pool_size=settings.db_pool_size,
+        db_max_overflow=settings.db_max_overflow,
     )
 
     yield
