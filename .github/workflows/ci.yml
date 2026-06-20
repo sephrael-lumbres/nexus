@@ -235,6 +235,7 @@ jobs:
           DATABASE_URL: postgresql+asyncpg://nexus:nexus@localhost:5432/nexus
           REDIS_URL: redis://localhost:6379/0
           LLM_PROVIDER: mock
+          WORKER_COUNT: 10
         run: |
           mkdir -p /tmp/benchmark
           python -m loadtest.benchmark --ci \

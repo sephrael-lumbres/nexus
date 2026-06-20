@@ -3,8 +3,10 @@
 import asyncio
 from logging.config import fileConfig
 
+from asyncpg.exceptions import CannotConnectNowError
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
@@ -66,6 +68,11 @@ async def run_async_migrations() -> None:
 
     Creates an async engine using asyncpg and runs migrations
     within a synchronous callback via run_sync().
+
+    Retries the initial connection since Postgres may still be
+    starting up. Raises CannotConnectNowError in that window,
+    which isn't wrapped as OperationalError since it occurs
+    before SQLAlchemy's statement-level error translation applies.
     """
     connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
@@ -73,8 +80,22 @@ async def run_async_migrations() -> None:
         poolclass=pool.NullPool,
     )
 
-    async with connectable.connect() as connection:
-        await connection.run_sync(do_run_migrations)
+    max_attempts = 5
+    delay_seconds = 3
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            async with connectable.connect() as connection:
+                await connection.run_sync(do_run_migrations)
+            break
+        except (CannotConnectNowError, OperationalError) as e:
+            if attempt == max_attempts:
+                raise
+            print(
+                f"Database not ready ({e}), retrying in "
+                f"{delay_seconds}s (attempt {attempt}/{max_attempts})..."
+            )
+            await asyncio.sleep(delay_seconds)
 
     await connectable.dispose()
 
